@@ -1,12 +1,18 @@
-from GPflow._settings import settings
-jitter_level = settings.numerics.jitter_level
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Mar 15 11:01:40 2017
+
+@author: hrs13
+"""
+
+jitter_level = GPflow.settings.numerics.jitter_level
 import tensorflow as tf
 
-def normal_sample(S, mean, var, full_cov=False):
+def normal_sample(mean, var, full_cov=False):
     if full_cov is False:
-        N, D = tf.shape(mean)
-        z = tf.random_normal((S, N, D), dtype=tf.float64)
-        return mean[None, :, :] + z * var[None, :, :] ** 0.5
+            N, D = tf.shape(mean)
+            z = tf.random_normal((S, N, D), dtype=tf.float64)
+            return mean[None, :, :] + z * var[None, :, :] ** 0.5
 
     else:
         assert S==1
