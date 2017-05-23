@@ -9,13 +9,29 @@ Created on Sat May 20 18:01:24 2017
 import pandas
 import numpy as np
 
-
+from subprocess import Popen, PIPE
+import os
 
 #data_path = '/Users/hughsalimbeni/Documents/dnsgpfiles/data/'
-data_path = '/vol/bitbucket/hrs13/dnsgpfiles/data/'
+#data_path = '/vol/bitbucket/hrs13/dnsgpfiles/data/'
+
+data_path = '../data/'
 
 PROPORTION_TRAIN = 0.9
 SEED = 0  # change (by more than 20) for different splits
+
+def download(name):
+    print 'Downloading file: {}'.format(name)
+    download_url = 'https://hrs13publicdata.blob.core.windows.net/publicdata/'
+    s1 = 'cd {}'.format(data_path)
+    s2 = 'wget {}{}.gz'.format(download_url, name)
+    s3 = 'gzip -d {}.gz'.format(name)
+    s = '{}\n{}\n{}\n'.format(s1, s2, s3)
+    proc = Popen(s, shell=True)
+    proc.wait()
+    assert os.path.isfile(data_path + name), 'something went wrong downloading'
+    print 'Downloaded file: {}'.format(name)
+
 
 
 def make_split(X_full, Y_full, split):
@@ -52,8 +68,11 @@ def get_mnist_data():
 
 
 def get_regression_data(name, split):
-    
     path = '{}{}.csv'.format(data_path, name)
+
+    if not os.path.isfile(path):
+        download(name +'.csv')
+        
     data = pandas.read_csv(path).values
 
     if name in ['energy', 'naval']:
@@ -76,7 +95,7 @@ def get_regression_data(name, split):
     return  X, Y[:, None], Xs, Ys[:, None]   
 
 
-
+X, Y, Xs, Ys = get_regression_data('energy', 0)
 
 
 

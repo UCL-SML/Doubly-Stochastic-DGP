@@ -29,9 +29,11 @@ import time
 
 X, Y, Xs, Ys = get_mnist_data()
 
+##############
 M = 100
 Z = kmeans2(X, M, minit='points')[0]
 
+##############
 class MultiClassSVPG(SVGP):
     @AutoFlow((tf.float64, [None, None]), (tf.int32, [None,]))
     def predict_density(self, Xnew, Ynew):
@@ -62,14 +64,14 @@ m_dgp3 = make_dgp(3)
 
     
     
-S = 100
 
 def assess_model_sgp(model, X_batch, Y_batch):
     m, v = model.predict_y(X_batch)
     l = model.predict_density(X_batch, Y_batch)
     a = (np.argmax(m, 1)==Y_batch)
     return l, a
-        
+       
+S = 100
 def assess_model_dgp(model, X_batch, Y_batch):
     m, v = model.predict_y(X_batch, S)
     l = model.predict_density_multiclass(X_batch, Y_batch, S)
