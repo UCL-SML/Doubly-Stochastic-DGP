@@ -1,5 +1,5 @@
 # mac hidden files
-.DStore
+.DS_Store
 
 # data files
 data/
