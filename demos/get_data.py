@@ -32,7 +32,6 @@ def download(name):
     print 'Downloaded file: {}'.format(name)
 
 
-
 def make_split(X_full, Y_full, split):
     N = X_full.shape[0]
     n = int(N * PROPORTION_TRAIN)
@@ -72,7 +71,7 @@ def get_regression_data(name, split):
     if not os.path.isfile(path):
         download(name +'.csv')
         
-    data = pandas.read_csv(path).values
+    data = pandas.read_csv(path, header=None).values
 
     if name in ['energy', 'naval']:
         # there are two Ys for these, but take only the first
@@ -94,6 +93,31 @@ def get_regression_data(name, split):
     return  X, Y[:, None], Xs, Ys[:, None]   
 
 
+def get_taxi_data(chunk):
+    file_name = 'taxi_data_shuffled_{}.csv'.format(chunk)
+    path = data_path + file_name
+    if not os.path.isfile(path):
+        download(file_name)
+    return pandas.read_csv(path, header=None).values
+    
+def get_taxi_stats():
+    file_name = 'taxi_data_stats.p'
+    path = data_path + file_name
+    if not os.path.isfile(path):
+        download(file_name)
 
+    import pickle
+    stats = pickle.load(open(path, 'r'))
+    sum_X = stats['sum_X']
+    sum_X2 = stats['sum_X2']
+    n = float(stats['n'])
+    X_mean = sum_X / n
+    X_std = ((sum_X2 - (sum_X**2)/n)/(n-1))**0.5
+
+    X_mean = np.reshape(X_mean, [1, -1])
+    X_std = np.reshape(X_std, [1, -1])
+    
+    return X_mean[:, :-1], X_std[:, :-1] # these included the target, but we don't normalize that here
+        
 
 
