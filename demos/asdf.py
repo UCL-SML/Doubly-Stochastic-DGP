@@ -18,7 +18,7 @@ X, Y, Xs, Ys = get_mnist_data()
 M = 100
 Z = kmeans2(X, M, minit='points')[0]
 
-m_sgp = SVPG(X, Y, RBF(784, lengthscales=2, variance=2), 
+m_sgp = SVGP(X, Y, RBF(784, lengthscales=2, variance=2), 
              MultiClass(10), Z, 
              num_latent=10, minibatch_size=100)
 
