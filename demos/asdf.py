@@ -37,7 +37,7 @@ class MultiClassSVPG(SVGP):
 
 m_sgp = MultiClassSVPG(X, Y, RBF(784, lengthscales=2, variance=2), 
              MultiClass(10), Z, 
-             num_latent=10, minibatch_size=10000)
+             num_latent=10, minibatch_size=100)
 
 def make_dgp(L):
     kernels = [RBF(784, lengthscales=2., variance=2.)]

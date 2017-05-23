@@ -84,7 +84,7 @@ def assess_model_dgp(model, X_batch, Y_batch):
 
 
 def batch_assess(model, assess_model, X, Y):
-    n_batches = int(len(X)/100)
+    n_batches = int(len(X)/10000)
     lik, acc = [], []
     for X_batch, Y_batch in zip(np.split(X, n_batches), np.split(Y, n_batches)):
         l, a = assess_model(model, X_batch, Y_batch)
