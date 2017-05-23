@@ -24,7 +24,7 @@ m_sgp = SVGP(X, Y, RBF(784, lengthscales=2, variance=2),
 
 m_sgp.optimize(tf.train.AdamOptimizer(0.01), maxiter=1)
 preds = np.argmax(m_sgp.predict_y(Xs)[0], 1)
-print np.average(np.array(pred==Ys, dtype=float))
+print np.average(np.array(preds==Ys, dtype=float))
 
 
 
