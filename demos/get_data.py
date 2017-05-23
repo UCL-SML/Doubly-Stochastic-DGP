@@ -11,7 +11,8 @@ import numpy as np
 
 
 
-data_path = '/Users/hughsalimbeni/Documents/dnsgpfiles/data/'
+#data_path = '/Users/hughsalimbeni/Documents/dnsgpfiles/data/'
+data_path = '/vol/bitbucket/hrs13/dnsgpfiles/data/'
 
 PROPORTION_TRAIN = 0.9
 SEED = 0  # change (by more than 20) for different splits
