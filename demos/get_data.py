@@ -9,18 +9,17 @@ Created on Sat May 20 18:01:24 2017
 import pandas
 import numpy as np
 
-from subprocess import Popen, PIPE
+from subprocess import Popen
 import os
 
-#data_path = '/Users/hughsalimbeni/Documents/dnsgpfiles/data/'
-#data_path = '/vol/bitbucket/hrs13/dnsgpfiles/data/'
+data_path = '../data/' # or somewhere else
 
-data_path = '../data/'
-
-PROPORTION_TRAIN = 0.9
 SEED = 0  # change (by more than 20) for different splits
+PROPORTION_TRAIN = 0.9
 
 def download(name):
+    if not os.path.isdir(data_path):
+        os.makedirs(data_path)
     print 'Downloading file: {}'.format(name)
     download_url = 'https://hrs13publicdata.blob.core.windows.net/publicdata/'
     s1 = 'cd {}'.format(data_path)
@@ -95,7 +94,6 @@ def get_regression_data(name, split):
     return  X, Y[:, None], Xs, Ys[:, None]   
 
 
-X, Y, Xs, Ys = get_regression_data('energy', 0)
 
 
 
