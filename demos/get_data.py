@@ -17,7 +17,7 @@ data_path = '../data/' # or somewhere else
 SEED = 0  # change (by more than 20) for different splits
 PROPORTION_TRAIN = 0.9
 
-def download(name):
+def download(name, data_path=data_path):
     if not os.path.isdir(data_path):
         os.makedirs(data_path)
     print 'Downloading file: {}'.format(name)
@@ -49,7 +49,7 @@ def make_split(X_full, Y_full, split):
     
     return X, Y, Xs, Ys
 
-def get_mnist_data():
+def get_mnist_data(data_path=data_path):
     from tensorflow.examples.tutorials.mnist import input_data
     mnist = input_data.read_data_sets(data_path+'MNIST_data/', one_hot=False)
 
@@ -65,11 +65,11 @@ def get_mnist_data():
     return X, Y, Xtest, Ytest
 
 
-def get_regression_data(name, split):
+def get_regression_data(name, split, data_path=data_path):
     path = '{}{}.csv'.format(data_path, name)
 
     if not os.path.isfile(path):
-        download(name +'.csv')
+        download(name +'.csv', data_path=data_path)
         
     data = pandas.read_csv(path, header=None).values
 
@@ -93,18 +93,18 @@ def get_regression_data(name, split):
     return  X, Y[:, None], Xs, Ys[:, None]   
 
 
-def get_taxi_data(chunk):
+def get_taxi_data(chunk, data_path=data_path):
     file_name = 'taxi_data_shuffled_{}.csv'.format(chunk)
     path = data_path + file_name
     if not os.path.isfile(path):
-        download(file_name)
+        download(file_name, data_path=data_path)
     return pandas.read_csv(path, header=None).values
     
-def get_taxi_stats():
+def get_taxi_stats(data_path=data_path):
     file_name = 'taxi_data_stats.p'
     path = data_path + file_name
     if not os.path.isfile(path):
-        download(file_name)
+        download(file_name, data_path=data_path)
 
     import pickle
     stats = pickle.load(open(path, 'r'))
