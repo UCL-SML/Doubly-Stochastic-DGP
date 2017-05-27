@@ -26,7 +26,6 @@ class Layer(Parameterized):
         self.q_mu, self.q_sqrt, self.Z = Param(q_mu), Param(q_sqrt), Param(Z)
         self.kern = kern
         self.mean_function = mean_function
-        self.mean_function.fixed = True
         
     def conditional(self, X, full_cov=False):
         mean, var = conditional(X, self.Z, self.kern,
@@ -109,7 +108,10 @@ class DGP(Model):
                                                           kernels):
             layers.append(Layer(kernel, q_mu, q_sqrt, Z, mean_function))
         self.layers = ParamList(layers)
-
+        
+        for layer in self.layers[:-1]: # fix the inner layer mean functions 
+            layer.mean_function.fixed = True
+            
         self.likelihood = likelihood
         
         if minibatch_size is not None:
