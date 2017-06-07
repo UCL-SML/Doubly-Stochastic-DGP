@@ -33,9 +33,9 @@ class Layer(Parameterized):
                                 full_cov=full_cov, whiten=True)
         return mean + self.mean_function(X), var
         
-    def multisample_conditional(self, X, Z, full_cov=False):
-        f = lambda ab: self.conditional(ab[0], ab[1], full_cov=full_cov)
-        mean, var = tf.map_fn(f, (X, Z), dtype=(tf.float64, tf.float64))
+    def multisample_conditional(self, X, full_cov=False):
+        f = lambda a: self.conditional(a, full_cov=full_cov)
+        mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
         return tf.stack(mean), tf.stack(var)
         
     def KL(self):
