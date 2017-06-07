@@ -33,17 +33,10 @@ class Layer(Parameterized):
                                 full_cov=full_cov, whiten=True)
         return mean + self.mean_function(X), var
         
-    def multisample_conditional(self, X, full_cov=False):
-        S, N, D_in = shape_as_list(X)
-        X_flat = tf.reshape(X, [S*N, D_in])
-        mean_flat, var_flat = self.conditional(X_flat, full_cov)
-        D_out = tf.shape(mean_flat)[1]
-        mean = tf.reshape(mean_flat, [S, N, D_out])
-        if full_cov is True:
-            var = tf.reshape(var_flat, [S, N, N, D_out])
-        else:
-            var = tf.reshape(var_flat, [S, N, D_out])
-        return mean, var
+    def multisample_conditional(self, X, Z, full_cov=False):
+        f = lambda ab: self.conditional(ab[0], ab[1], full_cov=full_cov)
+        mean, var = tf.map_fn(f, (X, Z), dtype=(tf.float64, tf.float64))
+        return tf.stack(mean), tf.stack(var)
         
     def KL(self):
         return gauss_kl_white(self.q_mu, self.q_sqrt)
@@ -144,9 +137,11 @@ class DGP(Model):
 
         S, N, D = shape_as_list(Fmean)
         Y = tile_over_samples(self.Y, self.num_samples)
-        flat_arrays = [tf.reshape(a, [S*N, -1]) for a in [Fmean, Fvar, Y]]
-        var_exp = self.likelihood.variational_expectations(*flat_arrays) #SN
-        var_exp = tf.reshape(var_exp, [S, N])
+        
+        f = lambda a: self.likelihood.variational_expectations(a[0], a[1], a[2])
+        var_exp = tf.map_fn(f, (Fmean, Fvar, Y), dtype=float_type)
+        var_exp = tf.stack(var_exp) #SN
+        
         var_exp = tf.reduce_mean(var_exp, 0) # S,N -> N. Average over samples
         L = tf.reduce_sum(var_exp) # N -> scalar. Sum over data (minibatch)
 
