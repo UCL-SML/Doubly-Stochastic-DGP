@@ -20,16 +20,16 @@ PROPORTION_TRAIN = 0.9
 def download(name, data_path=data_path):
     if not os.path.isdir(data_path):
         os.makedirs(data_path)
-    print 'Downloading file: {}'.format(name)
+    #print 'Downloading file: {}'.format(name)
     download_url = 'https://hrs13publicdata.blob.core.windows.net/publicdata/'
     s1 = 'cd {}'.format(data_path)
-    s2 = 'wget {}{}.gz'.format(download_url, name)
-    s3 = 'gzip -d {}.gz'.format(name)
+    s2 = 'sudo wget {}{}.gz'.format(download_url, name)
+    s3 = 'sudo gzip -d {}.gz'.format(name)
     s = '{}\n{}\n{}\n'.format(s1, s2, s3)
     proc = Popen(s, shell=True)
     proc.wait()
     assert os.path.isfile(data_path + name), 'something went wrong downloading'
-    print 'Downloaded file: {}'.format(name)
+    #print 'Downloaded file: {}'.format(name)
 
 
 def make_split(X_full, Y_full, split):
@@ -117,7 +117,7 @@ def get_taxi_stats(data_path=data_path):
     X_mean = np.reshape(X_mean, [1, -1])
     X_std = np.reshape(X_std, [1, -1])
     
-    return X_mean[:, :-1], X_std[:, :-1] # these included the target, but we don't normalize that here
+    return X_mean, X_std
         
 
 
