@@ -18,7 +18,7 @@ from GPflow._settings import settings
 
 float_type = settings.dtypes.float_type
 
-from utils import normal_sample, shape_as_list, tile_over_samples
+from .utils import normal_sample, shape_as_list, tile_over_samples
 
 class Layer(Parameterized):
     def __init__(self, kern, q_mu, q_sqrt, Z, mean_function):
