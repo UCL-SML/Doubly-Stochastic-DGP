@@ -180,19 +180,12 @@ class DGP(Model):
     
     @AutoFlow((float_type, [None, None]), (float_type, [None, None]), (tf.int32, []))
     def predict_density(self, Xnew, Ynew, num_samples):
-        return self._predict_density(Xnew, Ynew, num_samples)
-    
-    @AutoFlow((float_type, [None, None]), (tf.int32, [None, ]), (tf.int32, []))
-    def predict_density_multiclass(self, Xnew, Ynew, num_samples):
-        return self._predict_density(Xnew, Ynew, num_samples)
-    
-    def _predict_density(self, Xnew, Ynew, num_samples):
         Fmean, Fvar = self.build_predict(Xnew, full_cov=False, S=num_samples)
         S, N, D = shape_as_list(Fmean)
         Ynew = tile_over_samples(Ynew, num_samples)
         flat_arrays = [tf.reshape(a, [S*N, -1]) for a in [Fmean, Fvar, Ynew]]
         l_flat = self.likelihood.predict_density(*flat_arrays)
-        l = tf.reshape(l_flat, [S, N])
+        l = tf.reshape(l_flat, [S, N, -1])
         log_num_samples = tf.log(tf.cast(num_samples, float_type))
         return tf.reduce_logsumexp(l - log_num_samples, axis=0)
 
