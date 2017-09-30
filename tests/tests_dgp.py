@@ -5,25 +5,16 @@ Created on Mon May 22 13:46:18 2017
 @author: hrs13
 """
 
-
 import unittest
 import numpy as np
-
-
-import sys
-sys.path.append('../src')
-sys.path.append('../../DNSGP/GPflow')
 
 from GPflow.svgp import SVGP
 from GPflow.likelihoods import Gaussian
 from GPflow.kernels import RBF
 
-from GPflow.param import Param
-from GPflow.transforms import Log1pe
-from GPflow.gplvm import BayesianGPLVM
-from dgp import DGP
-    
-    
+from doubly_stochastic_dgp.dgp import DGP
+
+
 class DGPTests(unittest.TestCase):
     def test_vs_single_layer_GP(self):
         N, D_X, D_Y, M, Ns = 5, 4, 3, 5, 5
@@ -33,7 +24,8 @@ class DGPTests(unittest.TestCase):
         Z = np.random.randn(M, D_X)
         
         Xs = np.random.randn(Ns, D_X)
-        
+        Ys = np.random.randn(Ns, D_Y)
+
         noise = np.random.gamma([1, ])
         ls = np.random.gamma([D_X, ])
         s = np.random.gamma([D_Y, ])
@@ -80,80 +72,16 @@ class DGPTests(unittest.TestCase):
         assert np.allclose(preds_svgp, preds_dgp_2)
         assert np.allclose(preds_svgp, preds_dgp_3)
 
+        density_gp = m_svgp.predict_density(Xs, Ys)
 
-#    def test_vs_gplvm(self):
-#        N, D_X, D_Y, M, Ns = 5, 4, 3, 5, 5
-#        
-#        X_mean = np.random.randn(N, D_X)
-#        X_var = np.random.gamma([N, D_X])
-#        
-#        Y = np.random.randn(N, D_Y)
-##        Z = np.random.randn(M, D_X)
-#        
-#        Xs = np.random.randn(Ns, D_X)
-#        
-##        noise = np.random.gamma([1, ])
-##        ls = np.random.gamma([D_X, ])
-##        s = np.random.gamma([D_Y, ])
-##        q_mu = np.random.randn(M, D_Y)
-##        q_sqrt = np.random.randn(M, M, D_Y)
-#        
-#        
-#        m_gplvm = BayesianGPLVM(X_mean, X_var, Y, RBF(D_X), M, 
-#                                Z=None)
-#        
-#        m_gplvm.p
-#
-#
+        density_dgp_1 = m_dgp_1.predict_density(Xs, Ys, 2)
+        density_dgp_2 = m_dgp_2.predict_density(Xs, Ys, 2)
+        density_dgp_3 = m_dgp_3.predict_density(Xs, Ys, 2)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        assert np.allclose(density_dgp_1, density_gp)
+        assert np.allclose(density_dgp_2, density_gp)
+        assert np.allclose(density_dgp_3, density_gp)
 
 
 if __name__ == '__main__':
     unittest.main()
-
-
