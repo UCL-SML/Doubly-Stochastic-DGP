@@ -34,10 +34,20 @@ class Layer(Parameterized):
         return mean + self.mean_function(X), var
         
     def multisample_conditional(self, X, full_cov=False):
-        f = lambda a: self.conditional(a, full_cov=full_cov)
-        mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
-        return tf.stack(mean), tf.stack(var)
-        
+        if full_cov is True:
+            # will is unlikely to be called in a performance critical application so we use
+            # this clear but slow implementation
+            f = lambda a: self.conditional(a, full_cov=full_cov)
+            mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
+            return tf.stack(mean), tf.stack(var)
+        else:
+            # this should be faster as only computes the Z_uu once, but could be made faster
+            # still perhaps by avoiding reshaping (but need to rewrite conditional)
+            S, N, D = shape_as_list(X)
+            X_flat = tf.reshape(X, [S*N, D])
+            mean, var = self.conditional(X_flat)
+            return [tf.reshape(m, [S, N, -1]) for m in [mean, var]]
+
     def KL(self):
         return gauss_kl_white(self.q_mu, self.q_sqrt)
 
@@ -160,7 +170,6 @@ class DGP(Model):
     @AutoFlow((float_type, [None, None]))
     def predict_f_full_cov(self, Xnew):
         return self.build_predict(Xnew, full_cov=True, S=1)
-    
     
     @AutoFlow((float_type, [None, None]), (tf.int32, []))
     def predict_all_layers(self, Xnew, num_samples):
