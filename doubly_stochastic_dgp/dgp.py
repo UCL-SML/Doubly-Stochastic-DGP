@@ -35,7 +35,7 @@ class Layer(Parameterized):
         
     def multisample_conditional(self, X, full_cov=False):
         if full_cov is True:
-            # will is unlikely to be called in a performance critical application so we use
+            # this is unlikely to be called in a performance critical application, so we use
             # this clear but slow implementation
             f = lambda a: self.conditional(a, full_cov=full_cov)
             mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
