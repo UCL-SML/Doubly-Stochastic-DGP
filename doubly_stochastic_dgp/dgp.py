@@ -8,17 +8,17 @@ Created on Tue May 16 13:35:36 2017
 import tensorflow as tf
 import numpy as np
 
-from GPflow.param import Param, ParamList, Parameterized, AutoFlow, DataHolder
-from GPflow.minibatch import MinibatchData
-from GPflow.conditionals import conditional
-from GPflow.model import Model
-from GPflow.mean_functions import Linear, Zero
-from GPflow.kullback_leiblers import gauss_kl_white
-from GPflow._settings import settings
+from gpflow.param import Param, ParamList, Parameterized, AutoFlow, DataHolder
+from gpflow.minibatch import MinibatchData
+from gpflow.conditionals import conditional
+from gpflow.model import Model
+from gpflow.mean_functions import Linear, Zero
+from gpflow.kullback_leiblers import gauss_kl
+from gpflow._settings import settings
 
 float_type = settings.dtypes.float_type
 
-from .utils import normal_sample, shape_as_list, tile_over_samples
+from doubly_stochastic_dgp.utils import normal_sample, shape_as_list, tile_over_samples
 
 class Layer(Parameterized):
     def __init__(self, kern, q_mu, q_sqrt, Z, mean_function):
@@ -49,32 +49,54 @@ class Layer(Parameterized):
             return [tf.reshape(m, [S, N, -1]) for m in [mean, var]]
 
     def KL(self):
-        return gauss_kl_white(self.q_mu, self.q_sqrt)
+        return gauss_kl(self.q_mu, self.q_sqrt)
 
 
-def init_layers(X, Z, dims, final_mean_function):
+def init_layers(X, Z, dims, final_mean_function,
+                linear_mean_functions=True,
+                forward_propagate_inputs=False):
     M = Z.shape[0]
     q_mus, q_sqrts, mean_functions, Zs = [], [], [], []
     X_running, Z_running = X.copy(), Z.copy()
-    
-    for dim_in, dim_out in zip(dims[:-2], dims[1:-1]):
-        if dim_in == dim_out: # identity for same dims
-            W = np.eye(dim_in)
-        elif dim_in > dim_out: # use PCA mf for stepping down
-            _, _, V = np.linalg.svd(X_running, full_matrices=False)
-            W = V[:dim_out, :].T
-        elif dim_in < dim_out: # identity + pad with zeros for stepping up
-            I = np.eye(dim_in)
-            zeros = np.zeros((dim_in, dim_out - dim_in))
-            W = np.concatenate([I, zeros], 1)
 
-        mean_functions.append(Linear(A=W))
+    if forward_propagate_inputs:
+        Z_pad = np.zeros((M, dims[0] - X.shape[1]))
+        Z_running = np.concatenate([Z_running, Z_pad], 1)
+        X_running = np.concatenate([X_running, X_running*0.], 1)
+
+    for dim_in, dim_out in zip(dims[:-2], dims[1:-1]):
+        if forward_propagate_inputs:
+            gp_dim_out = dim_out - X.shape[1]
+        else:
+            gp_dim_out = dim_out
+
+        if linear_mean_functions:
+            if dim_in == gp_dim_out: # identity for same dims
+                W = np.eye(dim_in)
+            elif dim_in > gp_dim_out: # use PCA mf for stepping down
+                _, _, V = np.linalg.svd(X_running, full_matrices=False)
+                W = V[:gp_dim_out, :].T
+            elif dim_in < gp_dim_out: # identity + pad with zeros for stepping up
+                I = np.eye(dim_in)
+                zeros = np.zeros((dim_in, gp_dim_out - dim_in))
+                W = np.concatenate([I, zeros], 1)
+            mean_functions.append(Linear(A=W))
+        else:
+            mean_functions.append(Zero())
+
+
+
         Zs.append(Z_running.copy())
-        q_mus.append(np.zeros((M, dim_out)))
-        q_sqrts.append(np.eye(M)[:, :, None] * np.ones((1, 1, dim_out)))
-        
-        Z_running = Z_running.dot(W)
-        X_running = X_running.dot(W)
+        q_mus.append(np.zeros((M, gp_dim_out)))
+        q_sqrts.append(np.eye(M)[:, :, None] * np.ones((1, 1, gp_dim_out)))
+
+        if linear_mean_functions:
+            Z_running = Z_running.dot(W)
+            X_running = X_running.dot(W)
+            if forward_propagate_inputs:
+                Z_running = np.concatenate([Z, Z_running] ,1)
+                X_running = np.concatenate([X, X_running], 1)
+
 
     # final layer (as before but no mean function)
     mean_functions.append(final_mean_function)
@@ -90,12 +112,25 @@ class DGP(Model):
                  num_latent_Y=None, 
                  minibatch_size=None, 
                  num_samples=1,
-                 mean_function=Zero()):
+                 mean_function=Zero(),
+                 forward_propagate_inputs=False,
+                 linear_mean_functions=True):
         Model.__init__(self)
 
+        # basic consistency
         assert X.shape[0] == Y.shape[0]
         assert Z.shape[1] == X.shape[1]
-        assert kernels[0].input_dim == X.shape[1]
+
+        # check that the kernels are valid for inputs
+        if forward_propagate_inputs:
+            # first kernel must match the data repeated
+            assert kernels[0].input_dim == 2*X.shape[1]
+            # all others must have at least the data as input_dim
+            for kernel in kernels[1:]:
+                assert kernel.input_dim - X.shape[1] >= 0
+        else:
+            # only requirement is that the first kernel must agree with the data
+            assert kernels[0].input_dim == X.shape[1]
 
         self.num_data, D_X = X.shape
         self.num_samples = num_samples
@@ -103,7 +138,9 @@ class DGP(Model):
 
         self.dims = [k.input_dim for k in kernels] + [self.D_Y, ]
         q_mus, q_sqrts, Zs, mean_functions = init_layers(X, Z, self.dims, 
-                                                         mean_function)
+                                                         mean_function,
+                                                         forward_propagate_inputs=forward_propagate_inputs,
+                                                         linear_mean_functions=linear_mean_functions)
                                                          
         layers = []
         for q_mu, q_sqrt, Z, mean_function, kernel in zip(q_mus, q_sqrts, Zs, 
@@ -124,19 +161,31 @@ class DGP(Model):
             self.X = DataHolder(X)
             self.Y = DataHolder(Y)
 
+        self.forward_propagate_inputs = forward_propagate_inputs
+
     def propagate(self, X, full_cov=False, S=1):
-        Fs = [tile_over_samples(X, S), ]
+        sX = tile_over_samples(X, S)
+        if self.forward_propagate_inputs:
+            # start with zeros as the gp inputs if using forward prop
+            Fs = [sX*0., ]
+        else:
+            Fs = [sX, ]
         Fmeans, Fvars = [], []
 
         for layer in self.layers:
-            mean, var = layer.multisample_conditional(Fs[-1], full_cov=full_cov)
+            if self.forward_propagate_inputs:
+                inputs = tf.concat([sX, Fs[-1]], 2)
+            else:
+                inputs = Fs[-1]
+
+            mean, var = layer.multisample_conditional(inputs, full_cov=full_cov)
             F = normal_sample(mean, var, full_cov=full_cov)
 
             Fs.append(F)
             Fmeans.append(mean)
             Fvars.append(var)
 
-        return Fs[1:], Fmeans, Fvars # don't return Fs[0] as this is just X
+        return Fs[1:], Fmeans, Fvars  # don't return Fs[0] as this is just X
 
     def build_predict(self, X, full_cov=False, S=1):
         Fs, Fmeans, Fvars = self.propagate(X, full_cov, S)
@@ -173,11 +222,11 @@ class DGP(Model):
     
     @AutoFlow((float_type, [None, None]), (tf.int32, []))
     def predict_all_layers(self, Xnew, num_samples):
-        return self.propagate(Xnew, full_cov=False, S=num_samples)[0]
+        return self.propagate(Xnew, full_cov=False, S=num_samples)
 
-    @AutoFlow((float_type, [None, None]))
-    def predict_all_layers_full_cov(self, Xnew):
-        return self.propagate(Xnew, full_cov=True, S=1)[0]
+    @AutoFlow((float_type, [None, None]), (tf.int32, []))
+    def predict_all_layers_full_cov(self, Xnew, num_samples):
+        return self.propagate(Xnew, full_cov=True, S=num_samples)
     
     @AutoFlow((float_type, [None, None]), (tf.int32, []))
     def predict_y(self, Xnew, num_samples):
