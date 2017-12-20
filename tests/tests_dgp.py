@@ -1,17 +1,50 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Mon May 22 13:46:18 2017
-
-@author: hrs13
-"""
-
 import unittest
 import numpy as np
 
-from gpflow._settings import settings
-settings.numerics.jitter_level=1e-15
+from numpy.testing import assert_allclose
 
-from gpflow.svgp import SVGP
+from gpflow import settings
+s = settings.get_settings()
+s.numerics.jitter_level = 1e-15
+
+# with settings.temp_settings(s):
+
+from gpflow.models.svgp import SVGP
+from gpflow.kernels import RBF
+from gpflow.likelihoods import Gaussian
+
+# m = SVGP(np.zeros((2, 1)), np.zeros((2, 1)), RBF(1), Gaussian(), Z=np.zeros((2, 1)))
+# print(m.compute_log_likelihood())
+
+import gpflow
+import tensorflow as tf
+from doubly_stochastic_dgp.utils import normal_sample
+
+
+
+
+def f(x):
+    return x + settings.numerics.jitter_level
+
+class M(gpflow.models.SVGP):
+    @gpflow.autoflow()
+    def jitter(self):
+        return self.asdf()
+
+    @gpflow.params_as_tensors
+    def asdf(self):
+        m = np.zeros((1, 1, 1))
+        return normal_sample(m, m)
+
+print(M(np.zeros((1, 1,)), np.zeros((1, 1)),RBF(1), Gaussian(), Z=np.zeros((1, 1))).jitter())
+
+# assert False
+
+
+from gpflow.models.svgp import SVGP
+
+
+
 from gpflow.likelihoods import Gaussian
 from gpflow.kernels import RBF
 
@@ -39,97 +72,105 @@ class InitializationsTests(unittest.TestCase):
 
     def test_initializations_linear_mf(self):
         D = self.X.shape[1]
-        kerns = [RBF(D, lengthscales=10), self.kern_final]
+        kerns = [RBF(D, lengthscales=10.), self.kern_final]
         m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final)
 
         for layer in m_dgp.layers[:-1]:
-            layer.q_sqrt = layer.q_sqrt.value * 1e-12
+            layer.q_sqrt = layer.q_sqrt.read_value() * 0
 
         m_dgp.layers[-1].q_mu = self.q_mu
         m_dgp.layers[-1].q_sqrt = self.q_sqrt
 
         mean_svgp, var_svgp = self.svgp.predict_f(self.X)
 
-        means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
+        means_dgp, vars_dgp = m_dgp.predict_f(self.X, 2)
 
-        for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
-            assert np.allclose(mean_dgp, mean_svgp)
-            assert np.allclose(var_dgp, var_svgp)
+        # print(mean_svgp, var_svgp)
 
-    def test_initializations_zero_mf(self):
-        D = self.X.shape[1]
-        kerns = [RBF(D, lengthscales=10), self.kern_final]
-        m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
-                    linear_mean_functions=False)
+        Fs, ms, vars = m_dgp.predict_all_layers(self.X, 1)
+        for F, m, v in zip(Fs, ms, vars):
+            print(v)
+        print(ms[0] - mean_svgp)
 
-        for layer in m_dgp.layers[:-1]:
-            K = layer.kern.compute_K_symm(layer.Z.value)
-            L = np.linalg.cholesky(K + np.eye(self.X.shape[0])*1e-12)
-            layer.q_mu = np.linalg.solve(L, self.X)
-            layer.q_sqrt = layer.q_sqrt.value * 1e-12
 
-        m_dgp.layers[-1].q_mu = self.q_mu
-        m_dgp.layers[-1].q_sqrt = self.q_sqrt
-
-        mean_svgp, var_svgp = self.svgp.predict_f(self.X)
-
-        means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
-
-        for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
-            assert np.allclose(mean_dgp, mean_svgp)
-            assert np.allclose(var_dgp, var_svgp)
-
-    def test_initalizations_forward_prop(self):
-        D = self.X.shape[1]
-        final_kernel = RBF(2*D, lengthscales=self.kern_final.lengthscales.value)
-        kerns = [RBF(2*D, lengthscales=10), final_kernel]
-        m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
-                    forward_propagate_inputs=True,
-                    linear_mean_functions=False)
-
-        for layer in m_dgp.layers:
-            layer.Z = np.concatenate([self.X, 0*self.X], 1)
-
-        for layer in m_dgp.layers[:-1]:
-            layer.q_sqrt = layer.q_sqrt.value * 1e-18
-
-        m_dgp.layers[-1].q_mu = self.q_mu
-        m_dgp.layers[-1].q_sqrt = self.q_sqrt
-
-        mean_svgp, var_svgp = self.svgp.predict_f(self.X)
-
-        means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
-
-        for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
-            assert np.allclose(mean_dgp, mean_svgp)
-            assert np.allclose(var_dgp, var_svgp)
-
-    def test_initalizations_forward_prop_with_linear(self):
-        D = self.X.shape[1]
-        final_kernel = RBF(2 * D, lengthscales=self.kern_final.lengthscales.value)
-        kerns = [RBF(2 * D, lengthscales=10), final_kernel]
-        m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
-                    forward_propagate_inputs=True,
-                    linear_mean_functions=True)
-
-        for layer in m_dgp.layers:
-            layer.Z = np.concatenate([self.X, 0*self.X], 1)
-
-        for layer in m_dgp.layers[:-1]:
-            D = self.X.shape[1]
-            W_new = np.zeros((2*D, D))
-            layer.mean_function.A = W_new
-            layer.q_sqrt = layer.q_sqrt.value * 1e-18
-
-        m_dgp.layers[-1].q_mu = self.q_mu
-        m_dgp.layers[-1].q_sqrt = self.q_sqrt
-
-        mean_svgp, var_svgp = self.svgp.predict_f(self.X)
-
-        means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
-        for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
-            assert np.allclose(mean_dgp, mean_svgp)
-            assert np.allclose(var_dgp, var_svgp)
+        # for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
+        #     assert_allclose(mean_dgp, mean_svgp, rtol=1e-6, atol=1e-6)
+        #     assert_allclose(var_dgp, var_svgp, rtol=1e-6, atol=1e-6)
+#
+# def test_initializations_zero_mf(self):
+#     D = self.X.shape[1]
+#     kerns = [RBF(D, lengthscales=10.), self.kern_final]
+#     m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
+#                 linear_mean_functions=False)
+#
+#     for layer in m_dgp.layers[:-1]:
+#         K = layer.kern.compute_K_symm(layer.Z.value)
+#         L = np.linalg.cholesky(K + np.eye(self.X.shape[0])*1e-12)
+#         layer.q_mu = np.linalg.solve(L, self.X)
+#         layer.q_sqrt = layer.q_sqrt.value * 1e-12
+#
+#     m_dgp.layers[-1].q_mu = self.q_mu
+#     m_dgp.layers[-1].q_sqrt = self.q_sqrt
+#
+#     mean_svgp, var_svgp = self.svgp.predict_f(self.X)
+#
+#     means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
+#
+#     for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
+#         assert np.allclose(mean_dgp, mean_svgp)
+#         assert np.allclose(var_dgp, var_svgp)
+#
+# def test_initalizations_forward_prop(self):
+#     D = self.X.shape[1]
+#     final_kernel = RBF(2*D, lengthscales=self.kern_final.lengthscales.value)
+#     kerns = [RBF(2*D, lengthscales=10.), final_kernel]
+#     m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
+#                 forward_propagate_inputs=True,
+#                 linear_mean_functions=False)
+#
+#     for layer in m_dgp.layers:
+#         layer.Z = np.concatenate([self.X, 0*self.X], 1)
+#
+#     for layer in m_dgp.layers[:-1]:
+#         layer.q_sqrt = layer.q_sqrt.value * 1e-18
+#
+#     m_dgp.layers[-1].q_mu = self.q_mu
+#     m_dgp.layers[-1].q_sqrt = self.q_sqrt
+#
+#     mean_svgp, var_svgp = self.svgp.predict_f(self.X)
+#
+#     means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
+#
+#     for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
+#         assert np.allclose(mean_dgp, mean_svgp)
+#         assert np.allclose(var_dgp, var_svgp)
+#
+# def test_initalizations_forward_prop_with_linear(self):
+#     D = self.X.shape[1]
+#     final_kernel = RBF(2 * D, lengthscales=self.kern_final.lengthscales.value)
+#     kerns = [RBF(2 * D, lengthscales=10.), final_kernel]
+#     m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
+#                 forward_propagate_inputs=True,
+#                 linear_mean_functions=True)
+#
+#     for layer in m_dgp.layers:
+#         layer.Z = np.concatenate([self.X, 0*self.X], 1)
+#
+#     for layer in m_dgp.layers[:-1]:
+#         D = self.X.shape[1]
+#         W_new = np.zeros((2*D, D))
+#         layer.mean_function.A = W_new
+#         layer.q_sqrt = layer.q_sqrt.value * 1e-18
+#
+#     m_dgp.layers[-1].q_mu = self.q_mu
+#     m_dgp.layers[-1].q_sqrt = self.q_sqrt
+#
+#     mean_svgp, var_svgp = self.svgp.predict_f(self.X)
+#
+#     means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
+#     for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
+#         assert np.allclose(mean_dgp, mean_svgp)
+#         assert np.allclose(var_dgp, var_svgp)
 
 
 # class DGPTests(unittest.TestCase):

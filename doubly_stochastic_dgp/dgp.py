@@ -1,111 +1,30 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue May 16 13:35:36 2017
-
-@author: hrs13
-"""
+# Copyright 2017 Hugh Salimbeni
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import tensorflow as tf
-import numpy as np
 
-from gpflow.param import Param, ParamList, Parameterized, AutoFlow, DataHolder
-from gpflow.minibatch import MinibatchData
-from gpflow.conditionals import conditional
-from gpflow.model import Model
-from gpflow.mean_functions import Linear, Zero
-from gpflow.kullback_leiblers import gauss_kl
-from gpflow._settings import settings
+from gpflow.params import DataHolder, Minibatch
+from gpflow import autoflow, params_as_tensors
+from gpflow.models.model import Model
+from gpflow.mean_functions import Zero
+from gpflow.likelihoods import Gaussian
+from gpflow import settings
 
-float_type = settings.dtypes.float_type
+float_type = settings.tf_float
 
-from doubly_stochastic_dgp.utils import normal_sample, shape_as_list, tile_over_samples
-
-class Layer(Parameterized):
-    def __init__(self, kern, q_mu, q_sqrt, Z, mean_function):
-        Parameterized.__init__(self)
-        self.q_mu, self.q_sqrt, self.Z = Param(q_mu), Param(q_sqrt), Param(Z)
-        self.kern = kern
-        self.mean_function = mean_function
-        
-    def conditional(self, X, full_cov=False):
-        mean, var = conditional(X, self.Z, self.kern,
-                                self.q_mu, q_sqrt=self.q_sqrt,
-                                full_cov=full_cov, whiten=True)
-        return mean + self.mean_function(X), var
-        
-    def multisample_conditional(self, X, full_cov=False):
-        if full_cov is True:
-            # this is unlikely to be called in a performance critical application, so we use
-            # this clear but slow implementation
-            f = lambda a: self.conditional(a, full_cov=full_cov)
-            mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
-            return tf.stack(mean), tf.stack(var)
-        else:
-            # this should be faster as only computes the Z_uu once, but could be made faster
-            # still perhaps by avoiding reshaping (but need to rewrite conditional)
-            S, N, D = shape_as_list(X)
-            X_flat = tf.reshape(X, [S*N, D])
-            mean, var = self.conditional(X_flat)
-            return [tf.reshape(m, [S, N, -1]) for m in [mean, var]]
-
-    def KL(self):
-        return gauss_kl(self.q_mu, self.q_sqrt)
-
-
-def init_layers(X, Z, dims, final_mean_function,
-                linear_mean_functions=True,
-                forward_propagate_inputs=False):
-    M = Z.shape[0]
-    q_mus, q_sqrts, mean_functions, Zs = [], [], [], []
-    X_running, Z_running = X.copy(), Z.copy()
-
-    if forward_propagate_inputs:
-        Z_pad = np.zeros((M, dims[0] - X.shape[1]))
-        Z_running = np.concatenate([Z_running, Z_pad], 1)
-        X_running = np.concatenate([X_running, X_running*0.], 1)
-
-    for dim_in, dim_out in zip(dims[:-2], dims[1:-1]):
-        if forward_propagate_inputs:
-            gp_dim_out = dim_out - X.shape[1]
-        else:
-            gp_dim_out = dim_out
-
-        if linear_mean_functions:
-            if dim_in == gp_dim_out: # identity for same dims
-                W = np.eye(dim_in)
-            elif dim_in > gp_dim_out: # use PCA mf for stepping down
-                _, _, V = np.linalg.svd(X_running, full_matrices=False)
-                W = V[:gp_dim_out, :].T
-            elif dim_in < gp_dim_out: # identity + pad with zeros for stepping up
-                I = np.eye(dim_in)
-                zeros = np.zeros((dim_in, gp_dim_out - dim_in))
-                W = np.concatenate([I, zeros], 1)
-            mean_functions.append(Linear(A=W))
-        else:
-            mean_functions.append(Zero())
-
-
-
-        Zs.append(Z_running.copy())
-        q_mus.append(np.zeros((M, gp_dim_out)))
-        q_sqrts.append(np.eye(M)[:, :, None] * np.ones((1, 1, gp_dim_out)))
-
-        if linear_mean_functions:
-            Z_running = Z_running.dot(W)
-            X_running = X_running.dot(W)
-            if forward_propagate_inputs:
-                Z_running = np.concatenate([Z, Z_running] ,1)
-                X_running = np.concatenate([X, X_running], 1)
-
-
-    # final layer (as before but no mean function)
-    mean_functions.append(final_mean_function)
-    Zs.append(Z_running.copy())
-    q_mus.append(np.zeros((M, dims[-1])))
-    q_sqrts.append(np.eye(M)[:, :, None] * np.ones((1, 1, dims[-1])))
-
-    return q_mus, q_sqrts, Zs, mean_functions
-
+from doubly_stochastic_dgp.utils import normal_sample
+from doubly_stochastic_dgp.layer_initializations import init_layers_with_linear_mean_functions
 
 class DGP(Model):
     def __init__(self, X, Y, Z, kernels, likelihood, 
@@ -113,72 +32,37 @@ class DGP(Model):
                  minibatch_size=None, 
                  num_samples=1,
                  mean_function=Zero(),
-                 forward_propagate_inputs=False,
-                 linear_mean_functions=True):
+                 init_layers=init_layers_with_linear_mean_functions):
         Model.__init__(self)
-
-        # basic consistency
-        assert X.shape[0] == Y.shape[0]
-        assert Z.shape[1] == X.shape[1]
-
-        # check that the kernels are valid for inputs
-        if forward_propagate_inputs:
-            # first kernel must match the data repeated
-            assert kernels[0].input_dim == 2*X.shape[1]
-            # all others must have at least the data as input_dim
-            for kernel in kernels[1:]:
-                assert kernel.input_dim - X.shape[1] >= 0
-        else:
-            # only requirement is that the first kernel must agree with the data
-            assert kernels[0].input_dim == X.shape[1]
-
-        self.num_data, D_X = X.shape
+        self.num_data = X.shape[0]
         self.num_samples = num_samples
         self.D_Y = num_latent_Y or Y.shape[1]
 
-        self.dims = [k.input_dim for k in kernels] + [self.D_Y, ]
-        q_mus, q_sqrts, Zs, mean_functions = init_layers(X, Z, self.dims, 
-                                                         mean_function,
-                                                         forward_propagate_inputs=forward_propagate_inputs,
-                                                         linear_mean_functions=linear_mean_functions)
-                                                         
-        layers = []
-        for q_mu, q_sqrt, Z, mean_function, kernel in zip(q_mus, q_sqrts, Zs, 
-                                                          mean_functions, 
-                                                          kernels):
-            layers.append(Layer(kernel, q_mu, q_sqrt, Z, mean_function))
-        self.layers = ParamList(layers)
-        
-        for layer in self.layers[:-1]: # fix the inner layer mean functions 
-            layer.mean_function.fixed = True
-            
+        self.layers = init_layers(X, Y, Z, kernels, self.D_Y)
+        self.layers[-1].mean_function = mean_function
+
         self.likelihood = likelihood
         
         if minibatch_size is not None:
-            self.X = MinibatchData(X, minibatch_size)
-            self.Y = MinibatchData(Y, minibatch_size)
+            self.X = Minibatch(X, minibatch_size, seed=0)
+            self.Y = Minibatch(Y, minibatch_size, seed=0)
         else:
             self.X = DataHolder(X)
             self.Y = DataHolder(Y)
 
-        self.forward_propagate_inputs = forward_propagate_inputs
-
+    @params_as_tensors
     def propagate(self, X, full_cov=False, S=1):
-        sX = tile_over_samples(X, S)
-        if self.forward_propagate_inputs:
-            # start with zeros as the gp inputs if using forward prop
-            Fs = [sX*0., ]
-        else:
-            Fs = [sX, ]
+        sX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1])
+        Fs = [sX, ]
         Fmeans, Fvars = [], []
 
         for layer in self.layers:
-            if self.forward_propagate_inputs:
-                inputs = tf.concat([sX, Fs[-1]], 2)
+            if layer.forward_propagate_inputs:
+                X_inputs = tf.concat([sX, Fs[-1]], 2)
             else:
-                inputs = Fs[-1]
+                X_inputs = Fs[-1]
 
-            mean, var = layer.multisample_conditional(inputs, full_cov=full_cov)
+            mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
             F = normal_sample(mean, var, full_cov=full_cov)
 
             Fs.append(F)
@@ -187,22 +71,24 @@ class DGP(Model):
 
         return Fs[1:], Fmeans, Fvars  # don't return Fs[0] as this is just X
 
-    def build_predict(self, X, full_cov=False, S=1):
+    @params_as_tensors
+    def _build_predict(self, X, full_cov=False, S=1):
         Fs, Fmeans, Fvars = self.propagate(X, full_cov, S)
         return Fmeans[-1], Fvars[-1]
-    
-    def build_likelihood(self):
-        Fmean, Fvar = self.build_predict(self.X, full_cov=False, S=self.num_samples)
 
-        S, N, D = shape_as_list(Fmean)
-        Y = tile_over_samples(self.Y, self.num_samples)
-        
-        f = lambda a: self.likelihood.variational_expectations(a[0], a[1], a[2])
-        var_exp = tf.map_fn(f, (Fmean, Fvar, Y), dtype=float_type)
-        var_exp = tf.stack(var_exp) #SN
-        
-        var_exp = tf.reduce_mean(var_exp, 0) # S,N -> N. Average over samples
-        L = tf.reduce_sum(var_exp) # N -> scalar. Sum over data (minibatch)
+    @params_as_tensors
+    def _build_likelihood(self):
+        Fmean, Fvar = self._build_predict(self.X, full_cov=False, S=self.num_samples)
+
+        Y = tf.tile(tf.expand_dims(self.Y, 0), [self.num_samples, 1, 1])
+
+        if isinstance(self.likelihood, Gaussian):
+            var_exp = self.likelihood.variational_expectations(Fmean, Fvar, Y)
+        else:
+            f = lambda a: self.likelihood.variational_expectations(a[0], a[1], a[2])
+            var_exp = tf.stack(tf.map_fn(f, (Fmean, Fvar, Y), dtype=float_type))  # S,N
+
+        L = tf.reduce_sum(tf.reduce_mean(var_exp, 0))  # S,N -> N -> scalar
 
         KL = 0.
         for layer in self.layers:
@@ -212,45 +98,37 @@ class DGP(Model):
         scale /= tf.cast(tf.shape(self.X)[0], float_type)  # minibatch size
         return L * scale - KL
 
-    @AutoFlow((float_type, [None, None]), (tf.int32, []))
+    @autoflow((float_type, [None, None]), (tf.int32, []))
     def predict_f(self, Xnew, num_samples):
-        return self.build_predict(Xnew, full_cov=False, S=num_samples)
+        return self._build_predict(Xnew, full_cov=False, S=num_samples)
     
-    @AutoFlow((float_type, [None, None]))
+    @autoflow((float_type, [None, None]))
     def predict_f_full_cov(self, Xnew):
-        return self.build_predict(Xnew, full_cov=True, S=1)
+        return self._build_predict(Xnew, full_cov=True, S=1)
     
-    @AutoFlow((float_type, [None, None]), (tf.int32, []))
+    @autoflow((float_type, [None, None]), (tf.int32, []))
     def predict_all_layers(self, Xnew, num_samples):
         return self.propagate(Xnew, full_cov=False, S=num_samples)
 
-    @AutoFlow((float_type, [None, None]), (tf.int32, []))
+    @autoflow((float_type, [None, None]), (tf.int32, []))
     def predict_all_layers_full_cov(self, Xnew, num_samples):
         return self.propagate(Xnew, full_cov=True, S=num_samples)
     
-    @AutoFlow((float_type, [None, None]), (tf.int32, []))
+    @autoflow((float_type, [None, None]), (tf.int32, []))
     def predict_y(self, Xnew, num_samples):
-        Fmean, Fvar = self.build_predict(Xnew, full_cov=False, S=num_samples)
-        S, N, D = shape_as_list(Fmean)
+        Fmean, Fvar = self._build_predict(Xnew, full_cov=False, S=num_samples)
+        S, N, D = tf.shape(Fmean)[0], tf.shape(Fmean)[1], tf.shape(Fmean)[2]
         flat_arrays = [tf.reshape(a, [S*N, -1]) for a in [Fmean, Fvar]]
         Y_mean, Y_var = self.likelihood.predict_mean_and_var(*flat_arrays)
         return [tf.reshape(a, [S, N, self.D_Y]) for a in [Y_mean, Y_var]]
     
-    @AutoFlow((float_type, [None, None]), (float_type, [None, None]), (tf.int32, []))
+    @autoflow((float_type, [None, None]), (float_type, [None, None]), (tf.int32, []))
     def predict_density(self, Xnew, Ynew, num_samples):
-        Fmean, Fvar = self.build_predict(Xnew, full_cov=False, S=num_samples)
-        S, N, D = shape_as_list(Fmean)
-        Ynew = tile_over_samples(Ynew, num_samples)
+        Fmean, Fvar = self._build_predict(Xnew, full_cov=False, S=num_samples)
+        S, N, D = tf.shape(Fmean)[0], tf.shape(Fmean)[1], tf.shape(Fmean)[2]
+        Ynew = tf.tile(tf.expand_dims(Ynew, 0), [S, 1, 1])
         flat_arrays = [tf.reshape(a, [S*N, -1]) for a in [Fmean, Fvar, Ynew]]
         l_flat = self.likelihood.predict_density(*flat_arrays)
         l = tf.reshape(l_flat, [S, N, -1])
         log_num_samples = tf.log(tf.cast(num_samples, float_type))
         return tf.reduce_logsumexp(l - log_num_samples, axis=0)
-
-
-
-
-
-
-
-

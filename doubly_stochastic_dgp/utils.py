@@ -1,34 +1,32 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Mon May 22 13:36:25 2017
-
-@author: hrs13
-"""
+# Copyright 2017 Hugh Salimbeni
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import tensorflow as tf
-
-from GPflow._settings import settings
-jitter = settings.numerics.jitter_level
-float_type = settings.dtypes.float_type
-
-def tile_over_samples(X, S): 
-    ones =  tf.ones([S, ] + [1, ] *  X.get_shape().ndims, dtype=X.dtype)
-    return tf.expand_dims(X, 0) * ones
-
-def shape_as_list(X):
-    s = tf.shape(X)
-    return [s[i] for i in range(X.get_shape().ndims)]
+from gpflow import settings
 
 def normal_sample(mean, var, full_cov=False):
     if full_cov is False:
-        z = tf.random_normal(tf.shape(mean), dtype=float_type)
-        return mean + z * var ** 0.5
+        print(settings.numerics.jitter_level)
+        z = tf.random_normal(tf.shape(mean), dtype=settings.tf_float)
+        return mean + z * (var + settings.numerics.jitter_level)** 0.5
+
     else:
-        S, N, D = shape_as_list(mean) # var is SNND
+        S, N, D = tf.shape(mean)[0], tf.shape(mean)[1], tf.shape(mean)[2] # var is SNND
         mean = tf.transpose(mean, (0, 2, 1))  # SND -> SDN
         var = tf.transpose(var, (0, 3, 1, 2))  # SNND -> SDNN
-#        I = jitter * tf.eye(N, dtype=float_type)[None, None, :, :] # 11NN
-        chol = tf.cholesky(var)# + I)  # SDNN should be ok without as var already has jitter
-        z = tf.random_normal([S, D, N, 1], dtype=float_type)
+        I = settings.numerics.jitter_level * tf.eye(N, dtype=settings.tf_float)[None, None, :, :] # 11NN
+        chol = tf.cholesky(var + I)
+        z = tf.random_normal([S, D, N, 1], dtype=settings.tf_float)
         f = mean + tf.matmul(chol, z)[:, :, :, 0]  # SDN(1)
-        return tf.transpose(f, (0, 2, 1)) # SND  
+        return tf.transpose(f, (0, 2, 1)) # SND

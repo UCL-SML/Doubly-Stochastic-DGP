@@ -13,8 +13,8 @@ sys.path.append('../../DNSGP/GPflow')
 import numpy as np
 import tensorflow as tf
 
-from GPflow.likelihoods import Gaussian
-from GPflow.kernels import RBF
+from gpflow.likelihoods import Gaussian
+from gpflow.kernels import RBF
 
 from dgp import DGP
 
