@@ -15,11 +15,11 @@
 import numpy as np
 
 from gpflow.params import ParamList
-from gpflow.mean_functions import Linear
+from gpflow.mean_functions import Linear, Zero
 
 from doubly_stochastic_dgp.layer import Layer
 
-def init_layers_with_linear_mean_functions(X, Y, Z, kernels, D_Y):
+def init_layers_linear_mean_functions(X, Y, Z, kernels, D_Y):
     M = Z.shape[0]
     dims = [k.input_dim for k in kernels] + [D_Y, ]
 
@@ -48,5 +48,36 @@ def init_layers_with_linear_mean_functions(X, Y, Z, kernels, D_Y):
 
         Z_running = Z_running.dot(W)
         X_running = X_running.dot(W)
+
+    return ParamList(layers)
+
+
+def init_layers_input_propagation(X, Y, Z, kernels, D_Y):
+    D = X.shape[1]
+    M = Z.shape[0]
+    dims = [k.input_dim for k in kernels] + [D_Y, ]
+
+    layers = []
+
+    for l, (dim_in, dim_out, kern) in enumerate(zip(dims[:-1], dims[1:], kernels)):
+        if l == 0:  # first layer, not input prop so Z is the original Z
+            Z_layer = Z.copy()
+            forward_prop = False
+
+        else:  # other layers, need to input prop and append zeros to Z
+            Z_layer = np.concatenate([Z.copy(), np.zeros((M, dim_in - D))], 1)
+            forward_prop = True
+
+        if l == len(dims) - 2:  # final layer, dim_out is Y_dim
+            gp_output_dim = dim_out
+
+        else:  # inner layers, dim_out = X_dim + gp_dim
+            gp_output_dim = dim_out - D
+
+        q_mu = np.zeros((M, gp_output_dim))
+        q_sqrt = np.eye(M)[:, :, None] * np.ones((1, 1, gp_output_dim))
+
+        layers.append(Layer(kern, q_mu, q_sqrt, Z_layer, Zero(),
+                            forward_propagate_inputs=forward_prop))
 
     return ParamList(layers)

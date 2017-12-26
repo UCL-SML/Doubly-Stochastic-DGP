@@ -17,16 +17,15 @@ from gpflow import settings
 
 def normal_sample(mean, var, full_cov=False):
     if full_cov is False:
-        print(settings.numerics.jitter_level)
-        z = tf.random_normal(tf.shape(mean), dtype=settings.tf_float)
-        return mean + z * (var + settings.numerics.jitter_level)** 0.5
+        z = tf.random_normal(tf.shape(mean), dtype=settings.float_type)
+        return mean + z * (var + settings.jitter) ** 0.5
 
     else:
         S, N, D = tf.shape(mean)[0], tf.shape(mean)[1], tf.shape(mean)[2] # var is SNND
         mean = tf.transpose(mean, (0, 2, 1))  # SND -> SDN
         var = tf.transpose(var, (0, 3, 1, 2))  # SNND -> SDNN
-        I = settings.numerics.jitter_level * tf.eye(N, dtype=settings.tf_float)[None, None, :, :] # 11NN
+        I = settings.jitter * tf.eye(N, dtype=settings.float_type)[None, None, :, :] # 11NN
         chol = tf.cholesky(var + I)
-        z = tf.random_normal([S, D, N, 1], dtype=settings.tf_float)
+        z = tf.random_normal([S, D, N, 1], dtype=settings.float_type)
         f = mean + tf.matmul(chol, z)[:, :, :, 0]  # SDN(1)
         return tf.transpose(f, (0, 2, 1)) # SND

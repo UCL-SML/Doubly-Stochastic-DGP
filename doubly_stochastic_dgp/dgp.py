@@ -21,10 +21,10 @@ from gpflow.mean_functions import Zero
 from gpflow.likelihoods import Gaussian
 from gpflow import settings
 
-float_type = settings.tf_float
+float_type = settings.float_type
 
 from doubly_stochastic_dgp.utils import normal_sample
-from doubly_stochastic_dgp.layer_initializations import init_layers_with_linear_mean_functions
+from doubly_stochastic_dgp.layer_initializations import init_layers_linear_mean_functions
 
 class DGP(Model):
     def __init__(self, X, Y, Z, kernels, likelihood, 
@@ -32,7 +32,7 @@ class DGP(Model):
                  minibatch_size=None, 
                  num_samples=1,
                  mean_function=Zero(),
-                 init_layers=init_layers_with_linear_mean_functions):
+                 init_layers=init_layers_linear_mean_functions):
         Model.__init__(self)
         self.num_data = X.shape[0]
         self.num_samples = num_samples
@@ -78,15 +78,30 @@ class DGP(Model):
 
     @params_as_tensors
     def _build_likelihood(self):
-        Fmean, Fvar = self._build_predict(self.X, full_cov=False, S=self.num_samples)
+        _, Fmeans, Fvars = self.propagate(self.X, full_cov=False, S=self.num_samples)
 
         Y = tf.tile(tf.expand_dims(self.Y, 0), [self.num_samples, 1, 1])
 
         if isinstance(self.likelihood, Gaussian):
+            if len(self.layers) == 1:  # single layer special case
+                Fmean, Fvar = Fmeans[-1], Fvars[-1]
+
+            else:  # compute expectations analytically through final layer
+                m, v = Fmeans[-2], Fvars[-2]  # pnultimate layer means and vars
+                final_layer = self.layers[-1]
+                if final_layer.forward_propagate_inputs:
+                    sX = tf.tile(tf.expand_dims(self.X, 0), [self.num_samples, 1, 1])
+                    m = tf.concat([sX, m], 1)
+                    zeros = tf.zeros(tf.shape(sX), dtype=settings.float_type)
+                    v = tf.concat([zeros, v], 1)
+
+                Fmean, Fvar = final_layer.multisample_uncertain_conditional(m, v)
+
             var_exp = self.likelihood.variational_expectations(Fmean, Fvar, Y)
+
         else:
             f = lambda a: self.likelihood.variational_expectations(a[0], a[1], a[2])
-            var_exp = tf.stack(tf.map_fn(f, (Fmean, Fvar, Y), dtype=float_type))  # S,N
+            var_exp = tf.stack(tf.map_fn(f, (Fmeans[-1], Fvars[-1], Y), dtype=float_type))  # S,N
 
         L = tf.reduce_sum(tf.reduce_mean(var_exp, 0))  # S,N -> N -> scalar
 

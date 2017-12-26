@@ -3,242 +3,250 @@ import numpy as np
 
 from numpy.testing import assert_allclose
 
-from gpflow import settings
-s = settings.get_settings()
-s.numerics.jitter_level = 1e-15
-
-# with settings.temp_settings(s):
-
+from gpflow import settings, session_manager
 from gpflow.models.svgp import SVGP
-from gpflow.kernels import RBF
-from gpflow.likelihoods import Gaussian
+from gpflow.kernels import RBF, Matern52
+from gpflow.likelihoods import Gaussian, Bernoulli, MultiClass
 
-# m = SVGP(np.zeros((2, 1)), np.zeros((2, 1)), RBF(1), Gaussian(), Z=np.zeros((2, 1)))
-# print(m.compute_log_likelihood())
-
-import gpflow
-import tensorflow as tf
-from doubly_stochastic_dgp.utils import normal_sample
-
-
-
-
-def f(x):
-    return x + settings.numerics.jitter_level
-
-class M(gpflow.models.SVGP):
-    @gpflow.autoflow()
-    def jitter(self):
-        return self.asdf()
-
-    @gpflow.params_as_tensors
-    def asdf(self):
-        m = np.zeros((1, 1, 1))
-        return normal_sample(m, m)
-
-print(M(np.zeros((1, 1,)), np.zeros((1, 1)),RBF(1), Gaussian(), Z=np.zeros((1, 1))).jitter())
-
-# assert False
-
-
-from gpflow.models.svgp import SVGP
-
-
-
-from gpflow.likelihoods import Gaussian
-from gpflow.kernels import RBF
-
+from doubly_stochastic_dgp.layer_initializations import init_layers_input_propagation
+from doubly_stochastic_dgp.layer_initializations import init_layers_linear_mean_functions
 from doubly_stochastic_dgp.dgp import DGP
 
+np.random.seed(0)
 
-class InitializationsTests(unittest.TestCase):
+
+class TestVsSingleLayer(unittest.TestCase):
     def setUp(self):
-        N, D, D_Y = 3, 1, 1
-        self.X = np.random.randn(N, D)
-        self.Y = np.random.randn(N, D_Y)
-        self.lik_final = Gaussian()
-        self.lik_final.variance = 1e-1
-        self.kern_final = RBF(D, lengthscales=float(D)**0.5)
-        self.svgp = SVGP(self.X, self.Y, self.kern_final, self.lik_final, self.X)
+        Ns, N, D_X, D_Y = 5, 4, 3, 2
 
-        self.q_mu = np.random.randn(N, 1)
+        self.X = np.random.uniform(size=(N, D_X))
+        self.Xs = np.random.uniform(size=(Ns, D_X))
+        self.q_mu = np.random.randn(N, D_Y)
+        self.q_sqrt = np.random.randn(N, N, D_Y)
+        self.D_Y = D_Y
 
-        # self.q_sqrt = np.eye(N)[:, :, None] * np.ones((1, 1, D_Y))
-        u = np.random.randn(N, N, D)
-        self.q_sqrt = np.einsum('nmd,Nmd->nNd', u, u)
+    def test_gaussian_linear(self):
+        lik = Gaussian()
+        lik.variance = 0.01
+        N, Ns, D_Y = self.X.shape[0], self.Xs.shape[0], self.D_Y
+        Y = np.random.randn(N, D_Y)
+        Ys = np.random.randn(Ns, D_Y)
+        self.compare_to_single_layer(Y, Ys, lik,
+                                     init_layers_linear_mean_functions)
 
-        self.svgp.q_mu = self.q_mu
-        self.svgp.q_sqrt = self.q_sqrt
+    def test_gaussian_input_prop(self):
+        lik = Gaussian()
+        lik.variance = 0.01
 
-    def test_initializations_linear_mf(self):
-        D = self.X.shape[1]
-        kerns = [RBF(D, lengthscales=10.), self.kern_final]
-        m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final)
+        N, Ns, D_Y = self.X.shape[0], self.Xs.shape[0], self.D_Y
+        Y = np.random.randn(N, D_Y)
+        Ys = np.random.randn(Ns, D_Y)
+        self.compare_to_single_layer(Y, Ys, lik,
+                                     init_layers_input_propagation)
 
-        for layer in m_dgp.layers[:-1]:
-            layer.q_sqrt = layer.q_sqrt.read_value() * 0
+    def test_bernoulli_linear(self):
+        lik = Bernoulli()
+        N, Ns, D_Y = self.X.shape[0], self.Xs.shape[0], self.D_Y
+        Y = np.random.choice([-1., 1.], N*D_Y).reshape(N, D_Y)
+        Ys = np.random.choice([-1., 1.], Ns*D_Y).reshape(Ns, D_Y)
+        self.compare_to_single_layer(Y, Ys, lik,
+                                     init_layers_linear_mean_functions)
 
-        m_dgp.layers[-1].q_mu = self.q_mu
-        m_dgp.layers[-1].q_sqrt = self.q_sqrt
+    def compare_to_single_layer(self, Y, Ys, lik, init_method):
+        kern = Matern52(self.X.shape[1], lengthscales=0.1)
 
-        mean_svgp, var_svgp = self.svgp.predict_f(self.X)
+        m_svgp = SVGP(self.X, Y, kern, lik, Z=self.X)
+        m_svgp.q_mu = self.q_mu
+        m_svgp.q_sqrt = self.q_sqrt
 
-        means_dgp, vars_dgp = m_dgp.predict_f(self.X, 2)
+        L_svgp = m_svgp.compute_log_likelihood()
+        mean_svgp, var_svgp = m_svgp.predict_y(self.Xs)
+        test_lik_svgp = m_svgp.predict_density(self.Xs, Ys)
 
-        # print(mean_svgp, var_svgp)
+        m_dgp = DGP(self.X, Y, self.X, [kern], lik, init_layers=init_method)
+        m_dgp.layers[0].q_mu = self.q_mu
+        m_dgp.layers[0].q_sqrt = self.q_sqrt
 
-        Fs, ms, vars = m_dgp.predict_all_layers(self.X, 1)
-        for F, m, v in zip(Fs, ms, vars):
-            print(v)
-        print(ms[0] - mean_svgp)
+        L_dgp = m_dgp.compute_log_likelihood()
+        mean_dgp, var_dgp = m_dgp.predict_y(self.Xs, 1)
+        test_lik_dgp = m_dgp.predict_density(self.Xs, Ys, 1)
 
+        assert_allclose(L_svgp, L_dgp)
 
-        # for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
-        #     assert_allclose(mean_dgp, mean_svgp, rtol=1e-6, atol=1e-6)
-        #     assert_allclose(var_dgp, var_svgp, rtol=1e-6, atol=1e-6)
-#
-# def test_initializations_zero_mf(self):
-#     D = self.X.shape[1]
-#     kerns = [RBF(D, lengthscales=10.), self.kern_final]
-#     m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
-#                 linear_mean_functions=False)
-#
-#     for layer in m_dgp.layers[:-1]:
-#         K = layer.kern.compute_K_symm(layer.Z.value)
-#         L = np.linalg.cholesky(K + np.eye(self.X.shape[0])*1e-12)
-#         layer.q_mu = np.linalg.solve(L, self.X)
-#         layer.q_sqrt = layer.q_sqrt.value * 1e-12
-#
-#     m_dgp.layers[-1].q_mu = self.q_mu
-#     m_dgp.layers[-1].q_sqrt = self.q_sqrt
-#
-#     mean_svgp, var_svgp = self.svgp.predict_f(self.X)
-#
-#     means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
-#
-#     for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
-#         assert np.allclose(mean_dgp, mean_svgp)
-#         assert np.allclose(var_dgp, var_svgp)
-#
-# def test_initalizations_forward_prop(self):
-#     D = self.X.shape[1]
-#     final_kernel = RBF(2*D, lengthscales=self.kern_final.lengthscales.value)
-#     kerns = [RBF(2*D, lengthscales=10.), final_kernel]
-#     m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
-#                 forward_propagate_inputs=True,
-#                 linear_mean_functions=False)
-#
-#     for layer in m_dgp.layers:
-#         layer.Z = np.concatenate([self.X, 0*self.X], 1)
-#
-#     for layer in m_dgp.layers[:-1]:
-#         layer.q_sqrt = layer.q_sqrt.value * 1e-18
-#
-#     m_dgp.layers[-1].q_mu = self.q_mu
-#     m_dgp.layers[-1].q_sqrt = self.q_sqrt
-#
-#     mean_svgp, var_svgp = self.svgp.predict_f(self.X)
-#
-#     means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
-#
-#     for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
-#         assert np.allclose(mean_dgp, mean_svgp)
-#         assert np.allclose(var_dgp, var_svgp)
-#
-# def test_initalizations_forward_prop_with_linear(self):
-#     D = self.X.shape[1]
-#     final_kernel = RBF(2 * D, lengthscales=self.kern_final.lengthscales.value)
-#     kerns = [RBF(2 * D, lengthscales=10.), final_kernel]
-#     m_dgp = DGP(self.X, self.Y, self.X, kerns, self.lik_final,
-#                 forward_propagate_inputs=True,
-#                 linear_mean_functions=True)
-#
-#     for layer in m_dgp.layers:
-#         layer.Z = np.concatenate([self.X, 0*self.X], 1)
-#
-#     for layer in m_dgp.layers[:-1]:
-#         D = self.X.shape[1]
-#         W_new = np.zeros((2*D, D))
-#         layer.mean_function.A = W_new
-#         layer.q_sqrt = layer.q_sqrt.value * 1e-18
-#
-#     m_dgp.layers[-1].q_mu = self.q_mu
-#     m_dgp.layers[-1].q_sqrt = self.q_sqrt
-#
-#     mean_svgp, var_svgp = self.svgp.predict_f(self.X)
-#
-#     means_dgp, vars_dgp = m_dgp.predict_f(self.X, 3)
-#     for mean_dgp, var_dgp in zip(means_dgp, vars_dgp):
-#         assert np.allclose(mean_dgp, mean_svgp)
-#         assert np.allclose(var_dgp, var_svgp)
+        assert_allclose(mean_svgp, mean_dgp[0])
+        assert_allclose(var_svgp, var_dgp[0])
+        assert_allclose(test_lik_svgp, test_lik_dgp)
 
 
-# class DGPTests(unittest.TestCase):
-#     def test_vs_single_layer_GP(self):
-#         N, D_X, D_Y, M, Ns = 5, 4, 3, 5, 5
-#
-#         X = np.random.randn(N, D_X)
-#         Y = np.random.randn(N, D_Y)
-#         Z = np.random.randn(M, D_X)
-#
-#         Xs = np.random.randn(Ns, D_X)
-#         Ys = np.random.randn(Ns, D_Y)
-#
-#         noise = np.random.gamma([1, ])
-#         ls = np.random.gamma([D_X, ])
-#         s = np.random.gamma([D_Y, ])
-#         q_mu = np.random.randn(M, D_Y)
-#         q_sqrt = np.random.randn(M, M, D_Y)
-#
-#         m_svgp = SVGP(X, Y, RBF(D_X), Gaussian(), Z,
-#                       q_diag=False, whiten=True)
-#
-#         m_svgp.kern.lengthscales = ls
-#         m_svgp.kern.variance = s
-#         m_svgp.likelihood.variance = noise
-#         m_svgp.q_mu = q_mu
-#         m_svgp.q_sqrt = q_sqrt
-#
-#         def make_dgp_as_sgp(kernels):
-#             m_dgp = DGP(X, Y, Z, kernels, Gaussian())
-#
-#             #set final layer to sgp
-#             m_dgp.layers[-1].kern.lengthscales = ls
-#             m_dgp.layers[-1].kern.variance = s
-#             m_dgp.likelihood.variance = noise
-#             m_dgp.layers[-1].q_mu = q_mu
-#             m_dgp.layers[-1].q_sqrt = q_sqrt
-#
-#             # set other layers to identity
-#             for layer in m_dgp.layers[:-1]:
-# #                1e-6 gives errors of 1e-3, so need to set right down
-#                 layer.kern.variance.transform._lower = 1e-18
-#                 layer.kern.variance = 1e-18
-#
-#             return m_dgp
-#
-#         m_dgp_1 = make_dgp_as_sgp([RBF(D_X), ])
-#         m_dgp_2 = make_dgp_as_sgp([RBF(D_X), RBF(D_X)])
-#         m_dgp_3 = make_dgp_as_sgp([RBF(D_X), RBF(D_X), RBF(D_X)])
-#
-#         preds_svgp = m_svgp.predict_f(Xs)
-#         preds_dgp_1 = [mv[0] for mv in m_dgp_1.predict_f(Xs, 1)]
-#         preds_dgp_2 = [mv[0] for mv in m_dgp_2.predict_f(Xs, 1)]
-#         preds_dgp_3 = [mv[0] for mv in m_dgp_3.predict_f(Xs, 1)]
-#
-#         assert np.allclose(preds_svgp, preds_dgp_1)
-#         assert np.allclose(preds_svgp, preds_dgp_2)
-#         assert np.allclose(preds_svgp, preds_dgp_3)
-#
-#         density_gp = m_svgp.predict_density(Xs, Ys)
-#
-#         density_dgp_1 = m_dgp_1.predict_density(Xs, Ys, 2)
-#         density_dgp_2 = m_dgp_2.predict_density(Xs, Ys, 2)
-#         density_dgp_3 = m_dgp_3.predict_density(Xs, Ys, 2)
-#
-#         assert np.allclose(density_dgp_1, density_gp)
-#         assert np.allclose(density_dgp_2, density_gp)
-#         assert np.allclose(density_dgp_3, density_gp)
+class TestTwoLayerVsSingleLayer(unittest.TestCase):
+    def test_linear_mean_gaussian(self):
+        Ns, N, D_X, D_Y = 2, 2, 1, 1
+
+        X = np.random.uniform(low=-5, high=5, size=(N, D_X))
+        Y = np.random.randn(N, D_Y)
+        Xs = np.random.uniform(low=-5, high=5, size=(Ns, D_X))
+        Ys = np.random.randn(Ns, D_Y)
+
+        lik = Gaussian()
+        Kern = RBF
+        q_mu = np.random.randn(N, D_Y)
+        q_sqrt = np.random.randn(N, N, D_Y)
+
+        m_svgp = SVGP(X, Y, Kern(D_X), lik, Z=X)
+        m_svgp.q_mu = q_mu
+        m_svgp.q_sqrt = q_sqrt
+
+        L_svgp = m_svgp.compute_log_likelihood()
+        mean_svgp, var_svgp = m_svgp.predict_f(Xs)
+        test_lik_svgp = m_svgp.predict_density(Xs, Ys)
+
+        init_method = init_layers_linear_mean_functions
+        kerns = [Kern(D_X), Kern(D_X)]
+
+        m_dgp = DGP(X, Y, X, kerns, lik, init_layers=init_method)
+
+        m_dgp.layers[0].kern.variance = 1e-12
+
+        m_dgp.layers[-1].q_mu = q_mu
+        m_dgp.layers[-1].q_sqrt = q_sqrt
+
+        L_dgp = m_dgp.compute_log_likelihood()
+        mean_dgp, var_dgp = m_dgp.predict_f(Xs, 1)
+        test_lik_dgp = m_dgp.predict_density(Xs, Ys, 1)
+
+        assert_allclose(L_svgp, L_dgp, atol=1e-3, rtol=1e-3)
+
+        assert_allclose(mean_svgp, mean_dgp[0], atol=1e-3, rtol=1e-3)
+        assert_allclose(var_svgp, var_dgp[0],atol=1e-3, rtol=1e-3)
+        assert_allclose(test_lik_svgp, test_lik_dgp, atol=1e-3, rtol=1e-3)
+
+
+    def test_input_prop_gaussian(self):
+        Ns, N, D_X, D_Y = 2, 2, 1, 1
+
+        X = np.random.uniform(low=-5, high=5, size=(N, D_X))
+        Y = np.random.randn(N, D_Y)
+        Xs = np.random.uniform(low=-5, high=5, size=(Ns, D_X))
+        Ys = np.random.randn(Ns, D_Y)
+
+        lik = Gaussian()
+        Kern = RBF
+        q_mu = np.random.randn(N, D_Y)
+        q_sqrt = np.random.randn(N, N, D_Y)
+
+        m_svgp = SVGP(X, Y, Kern(D_X), lik, Z=X)
+        m_svgp.q_mu = q_mu
+        m_svgp.q_sqrt = q_sqrt
+
+        mean_svgp, var_svgp = m_svgp.predict_f(Xs)
+        test_lik_svgp = m_svgp.predict_density(Xs, Ys)
+
+        init_method = init_layers_input_propagation
+        kerns = [Kern(D_X), Kern(2*D_X)]
+
+        m_dgp = DGP(X, Y, X, kerns, lik, init_layers=init_method)
+
+        m_dgp.layers[0].kern.variance = 1e-12
+
+        K = kerns[0].compute_K_symm(X)
+        m_dgp.layers[1].q_mu = np.linalg.solve(np.linalg.cholesky(K), X)
+        m_dgp.layers[0].q_sqrt = m_dgp.layers[0].q_sqrt.read_value() * 1e-12
+
+        m_dgp.layers[-1].q_mu = q_mu
+        m_dgp.layers[-1].q_sqrt = q_sqrt
+
+        mean_dgp, var_dgp = m_dgp.predict_f(Xs, 1)
+        test_lik_dgp = m_dgp.predict_density(Xs, Ys, 1)
+
+        assert_allclose(mean_svgp, mean_dgp[0], atol=1e-3, rtol=1e-3)
+        assert_allclose(var_svgp, var_dgp[0],atol=1e-3, rtol=1e-3)
+        assert_allclose(test_lik_svgp, test_lik_dgp, atol=1e-3, rtol=1e-3)
+
+
+    def test_linear_mean_bernoulli(self):
+        Ns, N, D_X, D_Y = 2, 2, 1, 1
+
+        X = np.random.uniform(low=-5, high=5, size=(N, D_X))
+        Y = np.random.choice([1., -1], N).reshape(N, 1)
+        Xs = np.random.uniform(low=-5, high=5, size=(Ns, D_X))
+        Ys = np.random.choice([1., -1], Ns).reshape(Ns, 1)
+
+        lik = Bernoulli()
+        Kern = RBF
+        q_mu = np.random.randn(N, D_Y)
+        q_sqrt = np.random.randn(N, N, D_Y)
+
+        m_svgp = SVGP(X, Y, Kern(D_X), lik, Z=X)
+        m_svgp.q_mu = q_mu
+        m_svgp.q_sqrt = q_sqrt
+
+        L_svgp = m_svgp.compute_log_likelihood()
+        mean_svgp, var_svgp = m_svgp.predict_f(Xs)
+        test_lik_svgp = m_svgp.predict_density(Xs, Ys)
+
+        init_method = init_layers_linear_mean_functions
+        kerns = [Kern(D_X), Kern(D_X)]
+
+        m_dgp = DGP(X, Y, X, kerns, lik, init_layers=init_method)
+
+        m_dgp.layers[0].kern.variance = 1e-12
+
+        m_dgp.layers[-1].q_mu = q_mu
+        m_dgp.layers[-1].q_sqrt = q_sqrt
+
+        L_dgp = m_dgp.compute_log_likelihood()
+        mean_dgp, var_dgp = m_dgp.predict_f(Xs, 1)
+        test_lik_dgp = m_dgp.predict_density(Xs, Ys, 1)
+
+        assert_allclose(L_svgp, L_dgp, atol=1e-3, rtol=1e-3)
+
+        assert_allclose(mean_svgp, mean_dgp[0], atol=1e-3, rtol=1e-3)
+        assert_allclose(var_svgp, var_dgp[0],atol=1e-3, rtol=1e-3)
+        assert_allclose(test_lik_svgp, test_lik_dgp, atol=1e-3, rtol=1e-3)
+
+
+    def test_input_prop_gaussian_likelihood(self):
+        Ns, N, D_X, D_Y = 2, 2, 1, 1
+
+        X = np.random.uniform(low=-5, high=5, size=(N, D_X))
+        Y = np.random.choice([1., -1], N).reshape(N, 1)
+        Xs = np.random.uniform(low=-5, high=5, size=(Ns, D_X))
+        Ys = np.random.choice([1., -1], Ns).reshape(Ns, 1)
+
+        lik = Bernoulli()
+        Kern = RBF
+        q_mu = np.random.randn(N, D_Y)
+        q_sqrt = np.random.randn(N, N, D_Y)
+
+        m_svgp = SVGP(X, Y, Kern(D_X), lik, Z=X)
+        m_svgp.q_mu = q_mu
+        m_svgp.q_sqrt = q_sqrt
+
+        mean_svgp, var_svgp = m_svgp.predict_f(Xs)
+        test_lik_svgp = m_svgp.predict_density(Xs, Ys)
+
+        init_method = init_layers_input_propagation
+        kerns = [Kern(D_X), Kern(2*D_X)]
+
+        m_dgp = DGP(X, Y, X, kerns, lik, init_layers=init_method)
+
+        m_dgp.layers[0].kern.variance = 1e-12
+
+        K = kerns[0].compute_K_symm(X)
+        m_dgp.layers[1].q_mu = np.linalg.solve(np.linalg.cholesky(K), X)
+        m_dgp.layers[0].q_sqrt = m_dgp.layers[0].q_sqrt.read_value() * 1e-12
+
+        m_dgp.layers[-1].q_mu = q_mu
+        m_dgp.layers[-1].q_sqrt = q_sqrt
+
+        mean_dgp, var_dgp = m_dgp.predict_f(Xs, 1)
+        test_lik_dgp = m_dgp.predict_density(Xs, Ys, 1)
+
+        assert_allclose(mean_svgp, mean_dgp[0], atol=1e-3, rtol=1e-3)
+        assert_allclose(var_svgp, var_dgp[0],atol=1e-3, rtol=1e-3)
+        assert_allclose(test_lik_svgp, test_lik_dgp, atol=1e-3, rtol=1e-3)
+
+
 
 
 if __name__ == '__main__':
