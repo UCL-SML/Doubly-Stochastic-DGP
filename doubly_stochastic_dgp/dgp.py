@@ -32,12 +32,13 @@ class DGP(Model):
                  minibatch_size=None, 
                  num_samples=1,
                  mean_function=Zero(),
-                 init_layers=init_layers_linear_mean_functions):
+                 init_layers=init_layers_linear_mean_functions,
+                 analytic_final_expectations=False):
         Model.__init__(self)
         self.num_data = X.shape[0]
         self.num_samples = num_samples
         self.D_Y = num_latent_Y or Y.shape[1]
-
+        self.analytic_final_expectations = analytic_final_expectations
         self.layers = init_layers(X, Y, Z, kernels, self.D_Y)
         self.layers[-1].mean_function = mean_function
 
@@ -83,7 +84,7 @@ class DGP(Model):
         Y = tf.tile(tf.expand_dims(self.Y, 0), [self.num_samples, 1, 1])
 
         if isinstance(self.likelihood, Gaussian):
-            if len(self.layers) == 1:  # single layer special case
+            if len(self.layers) == 1 or (not self.analytic_final_expectations):
                 Fmean, Fvar = Fmeans[-1], Fvars[-1]
 
             else:  # compute expectations analytically through final layer
@@ -91,9 +92,9 @@ class DGP(Model):
                 final_layer = self.layers[-1]
                 if final_layer.forward_propagate_inputs:
                     sX = tf.tile(tf.expand_dims(self.X, 0), [self.num_samples, 1, 1])
-                    m = tf.concat([sX, m], 1)
-                    zeros = tf.zeros(tf.shape(sX), dtype=settings.float_type)
-                    v = tf.concat([zeros, v], 1)
+                    m = tf.concat([sX, m], -1)
+                    zeros = 1e-6 * tf.ones(tf.shape(sX), dtype=settings.float_type)
+                    v = tf.concat([zeros, v], -1)
 
                 Fmean, Fvar = final_layer.multisample_uncertain_conditional(m, v)
 

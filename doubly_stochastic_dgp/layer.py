@@ -37,11 +37,12 @@ class Layer(Parameterized):
         return mean + self.mean_function(X), var
 
 
-    def uncertain_conditional(self, X_mean, X_var, full_cov=False):
-        mean, var = uncertain_conditional(X_mean, X_var,
+    def uncertain_conditional(self, X_mean, X_var, full_cov=False, full_cov_output=False):
+        mean, var = uncertain_conditional(X_mean, tf.matrix_diag(X_var),  # need to make diag for now
                                           self.feature, self.kern,
                                           self.q_mu, q_sqrt=self.q_sqrt,
-                                          full_cov=full_cov, white=True)
+                                          full_cov=full_cov, white=True,
+                                          full_cov_output=full_cov_output)
 
         if not (isinstance(self.mean_function, Zero) or isinstance(self.mean_function, Constant)):
             assert False
@@ -69,7 +70,9 @@ class Layer(Parameterized):
             S, N, D = tf.shape(X_mean)[0], tf.shape(X_mean)[1], tf.shape(X_mean)[2]
             X_mean_flat = tf.reshape(X_mean, [S * N, D])
             X_var_flat = tf.reshape(X_var, [S * N, D])
-            mean, var = self.uncertain_conditional(X_mean_flat, X_var_flat)
+            mean, var = self.uncertain_conditional(X_mean_flat, X_var_flat,
+                                                   full_cov=False,
+                                                   full_cov_output=False)
             return [tf.reshape(m, [S, N, -1]) for m in [mean, var]]
 
     def KL(self):
