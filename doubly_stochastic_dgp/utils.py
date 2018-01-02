@@ -14,6 +14,7 @@
 
 import tensorflow as tf
 from gpflow import settings
+import numpy as np
 
 def normal_sample(mean, var, full_cov=False):
     if full_cov is False:
@@ -29,3 +30,50 @@ def normal_sample(mean, var, full_cov=False):
         z = tf.random_normal([S, D, N, 1], dtype=settings.float_type)
         f = mean + tf.matmul(chol, z)[:, :, :, 0]  # SDN(1)
         return tf.transpose(f, (0, 2, 1)) # SND
+
+
+class PositiveTransform(object):
+    eps = 1e-6
+    def forward(self, x):
+        NotImplementedError
+
+    def backward(self, y):
+        NotImplementedError
+
+    def forward_np(self, x):
+        NotImplementedError
+
+    def backward_np(self, y):
+        NotImplementedError
+
+
+class PositiveSoftplus(PositiveTransform):
+    def forward(self, x):
+        result = tf.log(1. + tf.exp(x)) + self.eps
+        return tf.where(x > 35., x + self.eps, result)
+
+    def backward(self, y):
+        result = tf.log(tf.exp(y - self.eps) - 1.)
+        return tf.where(y > 35., y - self.eps, result)
+
+    def forward_np(self, x):
+        result = np.log(1. + np.exp(x)) + self.eps
+        return np.where(x > 35., x + self.eps, result)
+
+    def backward_np(self, y):
+        result = np.log(np.exp(y - self.eps) - 1.)
+        return np.where(y > 35., y - self.eps, result)
+
+
+class PositiveExp(PositiveTransform):
+    def forward(self, x):
+        return tf.exp(x) + self.eps
+
+    def backward(self, y):
+        return tf.log(y - self.eps)
+
+    def forward_np(self, x):
+        return np.exp(x) + self.eps
+
+    def backward_np(self, y):
+        return np.log(y - self.eps)

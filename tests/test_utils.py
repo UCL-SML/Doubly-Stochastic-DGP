@@ -20,6 +20,7 @@ import tensorflow as tf
 from numpy.testing import assert_allclose
 
 from doubly_stochastic_dgp.utils import normal_sample
+from doubly_stochastic_dgp.utils import PositiveExp, PositiveSoftplus
 
 class TestUtils(unittest.TestCase):
     def test(self):
@@ -49,6 +50,55 @@ class TestUtils(unittest.TestCase):
         assert_allclose(np.std(samples_diag, 0)**2, S_diag, atol=0.05)
 
 
+class TestForwardBackward(unittest.TestCase):
+    def setUp(self):
+        N, D = 3, 2
+        self.x = np.random.randn(N, D)
+        self.y = np.random.randn(N, D)**2
+        self.pos_exp = PositiveExp()
+        self.pos_softplus = PositiveSoftplus()
+
+    def test_tf_np(self):
+        with tf.Session() as sess:
+            for f in self.pos_exp, self.pos_softplus:
+                y_tf = sess.run(f.forward(tf.cast(self.x, tf.float64)))
+                y_np = f.forward_np(self.x)
+                assert_allclose(y_tf, y_np)
+
+                x_tf = sess.run(f.backward(tf.cast(self.y, tf.float64)))
+                x_np = f.backward_np(self.y)
+                assert_allclose(x_tf, x_np)
+
+    def test_postive(self):
+        with tf.Session() as sess:
+            for f in self.pos_exp, self.pos_softplus:
+                y_tf = sess.run(f.forward(tf.cast(self.x, tf.float64)))
+                assert np.all(y_tf > 0.)
+
+    def test_inverse(self):
+        with tf.Session() as sess:
+            for f in self.pos_exp, self.pos_softplus:
+                x_tf = sess.run(f.backward(f.forward(tf.cast(self.x, tf.float64))))
+                assert_allclose(x_tf, self.x)
+                y_tf = sess.run(f.forward(f.backward(tf.cast(self.y, tf.float64))))
+                assert_allclose(y_tf, self.y)
+
+    def test_extreme_for_softplus(self):
+        with tf.Session() as sess:
+            f = self.pos_softplus
+            x = np.linspace(-5, 1000, 100)
+            y = np.linspace(1e-5, 1000, 100)
+
+            x_tf = sess.run(f.backward(f.forward(tf.cast(x, tf.float64))))
+            assert_allclose(x_tf, x)
+            y_tf = sess.run(f.forward(f.backward(tf.cast(y, tf.float64))))
+            assert_allclose(y_tf, y)
+
+            x_neg = np.linspace(-1000, 0)
+            y_neg = sess.run(f.forward(tf.cast(x_neg, tf.float64)))
+            assert(not np.any(np.isnan(y_neg)))
+            assert np.all(y_neg>0.)
+
+
 if __name__ == '__main__':
     unittest.main()
-
