@@ -15,11 +15,12 @@
 import tensorflow as tf
 
 from gpflow.params import DataHolder, Minibatch
-from gpflow import autoflow, params_as_tensors
+from gpflow import autoflow, params_as_tensors, ParamList
 from gpflow.models.model import Model
 from gpflow.mean_functions import Zero
-from gpflow.likelihoods import Gaussian
+from gpflow.likelihoods import Gaussian as Gaussian_likelihood
 from gpflow import settings
+from gpflow.priors import Gaussian as Gaussian_prior
 
 float_type = settings.float_type
 
@@ -27,6 +28,7 @@ from doubly_stochastic_dgp.utils import normal_sample
 from doubly_stochastic_dgp.layer_initializations import init_layers_linear_mean_functions
 from doubly_stochastic_dgp.layer import Layer
 from doubly_stochastic_dgp.utils import PositiveSoftplus
+
 
 class DGP(Model):
     """
@@ -95,11 +97,10 @@ class DGP(Model):
         Fs, Fmeans, Fvars = self.propagate(X, full_cov, S)
         return Fmeans[-1], Fvars[-1]
 
-    @params_as_tensors
-    def _build_likelihood(self):
+    def E_log_p_Y(self):
         Fmean, Fvar = self._build_predict(self.X, full_cov=False, S=self.num_samples)
 
-        if (isinstance(self.likelihood, Gaussian) or
+        if (isinstance(self.likelihood, Gaussian_likelihood) or
             isinstance(self.likelihood, HeteroscedasticGaussianlikelihood)):
             # the Gaussian likelihood broadcasts correctly so no need to tile or use map_fn
             var_exp = self.likelihood.variational_expectations(Fmean, Fvar, self.Y[None, :, :])
@@ -108,14 +109,17 @@ class DGP(Model):
             f = lambda a: self.likelihood.variational_expectations(a[0], a[1], a[2])
             var_exp = tf.stack(tf.map_fn(f, (Fmean, Fvar, Y), dtype=float_type))  # S,N
 
-        L = tf.reduce_sum(tf.reduce_mean(var_exp, 0))  # S,N -> N -> scalar
+        return tf.reduce_mean(var_exp, 0)  # N
 
-        KL = 0.
-        for layer in self.layers:
-            KL += layer.KL()
+    @params_as_tensors
+    def _build_likelihood(self):
+        L = tf.reduce_sum(self.E_log_p_Y())
+
+        KL = tf.reduce_sum([layer.KL() for layer in self.layers])
 
         scale = tf.cast(self.num_data, float_type)
         scale /= tf.cast(tf.shape(self.X)[0], float_type)  # minibatch size
+
         return L * scale - KL
 
     @autoflow((float_type, [None, None]), (tf.int32, []))
@@ -154,6 +158,191 @@ class DGP(Model):
         return tf.reduce_logsumexp(l - log_num_samples, axis=0)
 
 
+
+from gpflow.quadrature import mvhermgauss
+from gpflow.mean_functions import Zero
+
+class DGP_quad(DGP):
+    def __init__(self, *args, H=10, **kw):
+        DGP.__init__(self, *args, **kw)
+        # set up the quadrature points
+        self.H = H
+        self.D_quad = sum([layer.q_mu.shape[1] for layer in self.layers[:-1]])
+        gh_x, gh_w = mvhermgauss(H, self.D_quad)
+        gh_x *= 2.**0.5  # H**quad_dims, quad_dims
+        self.gh_w = gh_w * np.pi**(-0.5 * self.D_quad)  # H**quad_dims
+
+        s, e = 0, 0
+        self.gh_x = []
+        for layer in self.layers[:-1]:
+            e += layer.q_mu.shape[1]
+            self.gh_x.append(gh_x[:, s:e])  # this is broken up into each layer, for ease of use
+            s += layer.q_mu.shape[1]
+
+        self.gh_x.append(tf.zeros((1, 1), dtype=settings.float_type))
+
+    @params_as_tensors
+    def quadrature_propagate(self, X):
+        HX = tf.tile(tf.expand_dims(X, 0), [self.H**self.D_quad, 1, 1]) # H**D, N, D_x
+        Fs = [HX, ]
+        Fmeans, Fvars = [], []
+
+        for x, layer in zip(self.gh_x, self.layers):
+            if layer.forward_propagate_inputs:
+                X_inputs = tf.concat([HX, Fs[-1]], 2)
+            else:
+                X_inputs = Fs[-1]
+
+            mean, var = layer.multisample_conditional(X_inputs, full_cov=False)
+
+            F = mean + var**0.5 * x[:, None, :]  # H^quad_dims, N, D
+
+            Fs.append(F)
+            Fmeans.append(mean)
+            Fvars.append(var)
+
+        return Fs[1:], Fmeans, Fvars
+
+    def E_log_p_Y(self):
+        Fs, Fmeans, Fvars = self.quadrature_propagate(self.X)
+        Fmean, Fvar = Fmeans[-1], Fvars[-1]
+
+        if isinstance(self.likelihood, Gaussian_likelihood):
+            var_exp = self.likelihood.variational_expectations(Fmean, Fvar, self.Y[None, :, :]) # S,N,D_Y
+        else:
+            Y = tf.tile(self.Y[None, :, :], [self.num_samples, 1, 1])
+            f = lambda a: self.likelihood.variational_expectations(a[0], a[1], a[2])
+            var_exp = tf.stack(tf.map_fn(f, (Fmean, Fvar, Y), dtype=float_type))  # S,N,D_Y
+
+        # var_exp = tf.reshape(var_exp, [self.H**self.D_quad, self.num_data])
+
+        log_w = tf.log(tf.cast(self.gh_w, dtype=settings.float_type))
+        return tf.reduce_logsumexp(var_exp + log_w[:, None, None], 0)
+
+
+class HMC_DGP_quad(DGP_quad):
+    def __init__(self, *args, **kw):
+        DGP_quad.__init__(self, *args, **kw)
+        for layer in self.layers:
+            layer.q_mu.prior = Gaussian_prior(0., 1.)
+            del layer.q_sqrt
+            layer.q_sqrt = None
+
+        if 'minibatch_size' in kw:
+            assert (kw['minibatch_size'] is None) or (kw['minibatch_size']==self.num_data)
+
+
+
+
+# class HMC_DGPGaussianLikelihood(DGP):
+#     def __init__(self, X, Y, Z, kernels, likelihood,
+#                  num_latent_Y=None,
+#                  H=20,
+#                  mean_function=Zero(),
+#                  init_layers=init_layers_linear_mean_functions):
+#         Model.__init__(self)
+#
+#         # shapes
+#         self.num_data = X.shape[0]
+#         self.H = H
+#         self.D_Y = num_latent_Y or Y.shape[1]
+#
+#         # DGP layers
+#         svgp_layers = init_layers(X, Y, Z, kernels, self.D_Y)
+#         layers = []
+#         for svgp_layer in svgp_layers[:-1]:
+#             layers.append(HMCLayer(kernels[0],
+#                                    svgp_layer.q_mu.read_value(),
+#                                    svgp_layer.feature.Z.read_value(),
+#                                    svgp_layer.mean_function,
+#                                    forward_propagate_inputs=svgp_layer.forward_propagate_inputs))
+#
+#         self.layers = ParamList(layers)
+#         self.final_layer = GaussianLikelihoodGPlayer(svgp_layers[-1].kern, mean_function, likelihood,
+#                                                      forward_propagate_inputs=svgp_layers[-1].forward_propagate_inputs)
+#         self.likelihood = self.final_layer.likelihood  # for convenience
+#
+#         # del svgp_layers
+#
+#         self.X = DataHolder(X)
+#         self.Y = DataHolder(Y)
+#
+#         self.quad_dims = sum([layer.f.shape[1] for layer in self.layers])
+#         gh_x, gh_w = mvhermgauss(H, self.quad_dims)
+#         gh_x *= 2. ** 0.5  # H**quad_dims, quad_dims
+#         self.gh_w = gh_w * np.pi ** (-0.5 * self.quad_dims)  # H**quad_dims
+#
+#         s, e = 0, 0
+#         self.gh_x = []
+#         for layer in self.layers:
+#             e += layer.f.shape[1]
+#             self.gh_x.append(gh_x[:, s:e])  # this is broken up into each layer, for ease of use
+#             s += layer.f.shape[1]
+#
+#     @params_as_tensors
+#     def quadrature_propagate(self, X):
+#         HX = tf.tile(tf.expand_dims(X, 0), [self.H ** self.quad_dims, 1, 1])  # H**D, N, D_x
+#         Fs = [HX, ]
+#         Fmeans, Fvars = [], []
+#
+#         for x, layer in zip(self.gh_x, self.layers):
+#             if layer.forward_propagate_inputs:
+#                 X_inputs = tf.concat([HX, Fs[-1]], 2)
+#             else:
+#                 X_inputs = Fs[-1]
+#
+#             mean, var = layer.multisample_conditional(X_inputs, full_cov=False)
+#
+#             F = mean + var ** 0.5 * x[:, None, :]  # H^quad_dims, N, D
+#
+#             Fs.append(F)
+#             Fmeans.append(mean)
+#             Fvars.append(var)
+#
+#         return Fs, Fmeans, Fvars
+#
+#     @params_as_tensors
+#     def _build_predict(self, Xnew, full_cov=False):
+#         Fs, Fmeans, Fvars = self.propagate(self.X, full_cov)
+#
+#         if self.final_layer.forward_propagate_inputs:
+#             X_inputs = tf.concat([Fs[0], Fs[-1]], 2)
+#         else:
+#             X_inputs = Fs[-1]
+#
+#         def f(x):
+#             return list(self.final_layer.conditional(Xnew, x, self.Y, full_cov=full_cov))
+#
+#         ms, vs = tf.map_fn(f, X_inputs, dtype=[tf.float64, tf.float64])
+#         m = tf.reduce_sum(ms * self.gh_w[:, None, None], 0)
+#         v = tf.reduce_sum(((m[None, :, :] - ms) ** 2 + vs) * self.gh_w[:, None, None], 0)
+#         return m, v
+#
+#     @params_as_tensors
+#     def _build_likelihood(self):
+#         Fs, Fmean, Fvar = self.quadrature_propagate(self.X)
+#
+#         if self.final_layer.forward_propagate_inputs:
+#             X_inputs = tf.concat([Fs[0], Fs[-1]], 2)
+#         else:
+#             X_inputs = Fs[-1]
+#
+#         def f(x):
+#             return self.final_layer.build_likelihood(x, self.Y)
+#
+#         Ls = tf.map_fn(f, X_inputs)
+#         return tf.reduce_sum(Ls * self.gh_w)
+#
+#     @autoflow((float_type, [None, None]))
+#     def predict_f(self, Xnew):
+#         return self._build_predict(Xnew, full_cov=False)
+#
+#     @autoflow((float_type, [None, None]))
+#     def predict_f_full_cov(self, Xnew):
+#         return self._build_predict(Xnew, full_cov=True)
+
+
+
 from gpflow.params import Parameter
 from gpflow import transforms
 from gpflow.likelihoods import Likelihood
@@ -177,7 +366,7 @@ class HeteroscedasticGaussianlikelihood(Likelihood):
         start_F = [0, ] * dims
         end_F = [-1, ] * (dims - 1) + [self.Dy, ]
 
-        start_l = [0, ] * (dims - 1) + [self.Dy]
+        start_l = [0, ] * (dims - 1) + [self.Dy, ]
         end_l = [-1, ] * (dims - 1) + [-1, ]
 
         # l = F_l[:, :, self.Dy:]
@@ -228,7 +417,6 @@ class HeteroscedasticGaussianlikelihood(Likelihood):
 
 
 class HeteroscedasticDGP(DGP):
-    # def __init__(self, X, Y, Z, kernels, likelihood, likelihood_kernel, **kwargs):
     def __init__(self, X, Y, Z, kernels, likelihood, likelihood_kernel, **kwargs):
 
         assert isinstance(likelihood, HeteroscedasticGaussianlikelihood)
@@ -239,6 +427,7 @@ class HeteroscedasticDGP(DGP):
         q_sqrt = np.tile(np.eye(M)[:, :, None], [1, 1, D_Y])
         self.likelihood_variance_layer = Layer(likelihood_kernel, q_mu, q_sqrt, Z, Zero())
 
+    @params_as_tensors
     def propagate(self, X, full_cov=False, S=1):
         Fs, Fmeans, Fvars = DGP.propagate(self, X, full_cov=full_cov, S=S)
 

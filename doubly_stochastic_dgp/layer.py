@@ -19,7 +19,7 @@ from doubly_stochastic_dgp.utils import normal_sample
 
 from gpflow.params import Parameter, Parameterized
 from gpflow.conditionals import conditional, uncertain_conditional
-from gpflow.kullback_leiblers import gauss_kl
+from gpflow.kullback_leiblers import gauss_kl as _gauss_kl
 from gpflow.mean_functions import Zero, Constant
 from gpflow.features import InducingPoints
 from gpflow.likelihoods import Gaussian
@@ -27,6 +27,16 @@ from gpflow import settings
 from gpflow import params_as_tensors
 from gpflow import densities
 
+
+from gpflow.priors import Gaussian as Gaussian_prior
+from gpflow.densities import multivariate_normal
+from gpflow.likelihoods import Gaussian as Gaussian_likelihood
+
+def gauss_kl(mean, var_sqrt):
+    if var_sqrt is not None:
+        return _gauss_kl(mean, var_sqrt)
+    else:
+        return tf.cast(0., dtype=settings.float_type)
 
 class Layer(Parameterized):
     def __init__(self, kern, q_mu, q_sqrt, Z, mean_function, forward_propagate_inputs=False):
@@ -141,56 +151,67 @@ class Layer(Parameterized):
         return gauss_kl(self.q_mu, self.q_sqrt)
 
 
+
+# class HMCLayer(Layer):
+#     def __init__(self, kern, q_mu, Z, mean_function, forward_propagate_inputs=False):
+#         Parameterized.__init__(self)
+#         self.f = Parameter(q_mu)
+#         self.f.prior = Gaussian_prior(0., 1.)
+#         self.feature = InducingPoints(Z)
+#         self.kern = kern
+#         self.mean_function = mean_function
+#         self.forward_propagate_inputs = forward_propagate_inputs
 #
-# class IdentityScalingLayer(object):
-#     """
-#     A dummy scaling layer to use when no scaling is required.
+#     def conditional(self, X, full_cov=False):
+#         mean, var = conditional(X, self.feature.Z, self.kern, self.f,
+#                                 full_cov=full_cov, white=True)
+#         return mean + self.mean_function(X), var
 #
-#     Intended usage is
-#     IdentityScalingLayer(1.) for multiplicative identity, or
-#     IdentityScalingLayer(0.) for additive identity
-#     """
-#     def __init__(self, value):
-#         self.value = tf.cast(value, dtype=settings.float_type)
+#     def uncertain_conditional(self, X_mean, X_var, full_cov=False, full_cov_output=False):
+#         mean, var = uncertain_conditional(X_mean, tf.matrix_diag(X_var),  # need to make diag for now
+#                                           self.feature, self.kern, self.f,
+#                                           full_cov=full_cov, white=True,
+#                                           full_cov_output=full_cov_output)
 #
-#     def scale(self, SX, full_cov=False):
-#         return self.value
+#         if not (isinstance(self.mean_function, Zero) or isinstance(self.mean_function, Constant)):
+#             assert False
+#
+#         return mean + self.mean_function(X_mean), var
 #
 #     def KL(self):
-#         return 0.
+#         raise NotImplementedError
 #
 #
-# class ScalingLayer(Layer):
-#     def __init__(self, kern, q_mu, q_sqrt, Z, avg_value, positive_transform=PositiveExp()):
-#         """
-#         A GP layer for applying heteroscedastic scaling e.g. for amplitude or noise variance
+# class GaussianLikelihoodGPlayer(Parameterized):
+#     def __init__(self, kern, mean_function, likelihood,
+#                  forward_propagate_inputs=False):
+#         Parameterized.__init__(self)
+#         self.kern = kern
+#         self.mean_function = mean_function
+#         assert isinstance(likelihood, Gaussian_likelihood)
+#         self.likelihood = likelihood
+#         self.forward_propagate_inputs = forward_propagate_inputs
 #
-#         The layer assumes a constant mean and adds a positive transformation so the
-#         outputs can be used for scaling.
+#     def build_likelihood(self, X, Y):
+#         K = self.kern.K(X) + tf.eye(tf.shape(X)[0], dtype=settings.float_type) * self.likelihood.variance
+#         L = tf.cholesky(K)
+#         m = self.mean_function(X)
+#         return multivariate_normal(Y, m, L)
 #
-#         Avg_value is the mean of gp pushed through the transform, i.e. the central
-#         value after transforming. The layer pushes this avg_value through the inverse
-#         positive transform to get the gp constant mean value
-#
-#         :kern: The kernel for the layer (input_dim = D_in)
-#         :param q_mu: Variational mean initialization (M x D_out)
-#         :param q_sqrt: Variational cholesky of variance initialization (M x M x D_out)
-#         :param Z: Inducing points (M, D_in)
-#         :param avg_value: The average value of the GP
-#         :return:
-#         """
-#
-#         # use the inverse positive transform to get the gp mean
-#         gp_avg_value = positive_transform.backward_np(avg_value)
-#
-#         Layer.__init__(self, kern, q_mu, q_sqrt, Z, Constant(gp_avg_value))
-#
-#         self.positive_transform = positive_transform
-#
-#     def scale(self, SX, full_cov=False):
-#         """
-#         Multisample scaling values. I.e. a samples from the GP conditional pushed
-#         through the transform.
-#         """
-#         mean, var = self.multisample_conditional(SX, full_cov=full_cov)
-#         return self.positive_transform.forward(normal_sample(mean, var, full_cov=full_cov))
+#     def conditional(self, Xnew, X, Y, full_cov=False):
+#         Kx = self.kern.K(X, Xnew)
+#         K = self.kern.K(X) + tf.eye(tf.shape(X)[0], dtype=settings.float_type) * self.likelihood.variance
+#         L = tf.cholesky(K)
+#         A = tf.matrix_triangular_solve(L, Kx, lower=True)
+#         V = tf.matrix_triangular_solve(L, Y - self.mean_function(X))
+#         fmean = tf.matmul(A, V, transpose_a=True) + self.mean_function(Xnew)
+#         if full_cov:
+#             fvar = self.kern.K(Xnew) - tf.matmul(A, A, transpose_a=True)
+#             shape = tf.stack([1, 1, tf.shape(Y)[1]])
+#             fvar = tf.tile(tf.expand_dims(fvar, 2), shape)
+#         else:
+#             fvar = self.kern.Kdiag(Xnew) - tf.reduce_sum(tf.square(A), 0)
+#             fvar = tf.tile(tf.reshape(fvar, (-1, 1)), [1, tf.shape(Y)[1]])
+#         return fmean, fvar
+
+    # def multisample_conditional(self, Xnew, X, Y, full_cov=False):
