@@ -14,7 +14,11 @@
 
 import tensorflow as tf
 from gpflow import settings
+from gpflow.likelihoods import Likelihood
+from gpflow import params_as_tensors
 import numpy as np
+
+from gpflow.likelihoods import *
 
 def normal_sample(mean, var, full_cov=False):
     if full_cov is False:
@@ -30,6 +34,75 @@ def normal_sample(mean, var, full_cov=False):
         z = tf.random_normal([S, D, N, 1], dtype=settings.float_type)
         f = mean + tf.matmul(chol, z)[:, :, :, 0]  # SDN(1)
         return tf.transpose(f, (0, 2, 1)) # SND
+
+
+class LikelihoodWrapper(Likelihood):
+    """
+    A wrapper for the likelihood to broadcast over the samples dimension. Some likelihoods
+    don't need this, but for others (e.g. bernoulli) need reshaping and tiling.
+    """
+    def __init__(self, likelihood):
+        Likelihood.__init__(self)
+        self._likelihood = likelihood
+
+        to_broadcast = [Bernoulli, MultiClass]
+        if np.any([isinstance(likelihood, L) for L in to_broadcast]):
+            self.needs_broadcasting = True
+        else:
+            self.needs_broadcasting = True
+
+    def _broadcast(self, f, vars_SND, vars_ND):
+        if self.needs_broadcasting is False:
+            return f(vars_SND, vars_ND)
+
+        else:
+            S, N, D = [tf.shape(vars_SND[0])[i] for i in range(3)]
+            vars_tiled = [tf.tile(x[None, :, :], [S, 1, 1]) for x in vars_ND]
+
+            flattened_SND = [tf.reshape(x, [S*N, D]) for x in vars_SND]
+            flattened_tiled = [tf.reshape(x, [S*N, D]) for x in vars_tiled]
+
+            flattened_result = f(flattened_SND, flattened_tiled)
+            if isinstance(flattened_result, tuple):
+                return [tf.reshape(x, [S, N, D]) for x in flattened_result]
+            else:
+                return tf.reshape(flattened_result, [S, N, D])
+
+    @params_as_tensors
+    def variational_expectations(self, Fmu, Fvar, Y):
+        f = lambda vars_SND, vars_ND: self._likelihood.variational_expectations(vars_SND[0],
+                                                                                vars_SND[1],
+                                                                                vars_ND[0])
+        return self._broadcast(f,[Fmu, Fvar], [Y])
+
+    @params_as_tensors
+    def logp(self, F, Y):
+        f = lambda vars_SND, vars_ND: self._likelihood.logp(vars_SND[0], vars_ND[0])
+        return self._broadcast(f, [F], [Y])
+
+    @params_as_tensors
+    def conditional_mean(self, F):
+         f = lambda vars_SND, vars_ND: self._likelihood.conditional_mean(vars_SND[0])
+         return self._broadcast(f,[F], [])
+
+    @params_as_tensors
+    def conditional_variance(self, F):
+         f = lambda vars_SND, vars_ND: self._likelihood.conditional_variance(vars_SND[0])
+         return self._broadcast(f,[F], [])
+
+    @params_as_tensors
+    def predict_mean_and_var(self, Fmu, Fvar):
+         f = lambda vars_SND, vars_ND: self._likelihood.predict_mean_and_var(vars_SND[0],
+                                                                             vars_SND[1])
+         return self._broadcast(f,[Fmu, Fvar], [])
+
+    @params_as_tensors
+    def predict_density(self, Fmu, Fvar, Y):
+        f = lambda vars_SND, vars_ND: self._likelihood.predict_density(vars_SND[0],
+                                                                       vars_SND[1],
+                                                                       vars_ND[0])
+        return self._broadcast(f,[Fmu, Fvar], [Y])
+
 
 
 class PositiveTransform(object):

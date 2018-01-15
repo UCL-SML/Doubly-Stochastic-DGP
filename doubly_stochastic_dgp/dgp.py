@@ -28,6 +28,8 @@ from doubly_stochastic_dgp.utils import normal_sample
 from doubly_stochastic_dgp.layer_initializations import init_layers_linear_mean_functions
 from doubly_stochastic_dgp.layer import Layer
 from doubly_stochastic_dgp.utils import PositiveSoftplus
+from doubly_stochastic_dgp.utils import LikelihoodWrapper
+
 
 
 class DGP(Model):
@@ -61,7 +63,7 @@ class DGP(Model):
         self.layers = init_layers(X, Y, Z, kernels, self.D_Y)
         self.layers[-1].mean_function = mean_function
 
-        self.likelihood = likelihood
+        self.likelihood = LikelihoodWrapper(likelihood)
 
         # data
         if minibatch_size is not None:
@@ -95,31 +97,19 @@ class DGP(Model):
     @params_as_tensors
     def _build_predict(self, X, full_cov=False, S=1):
         Fs, Fmeans, Fvars = self.propagate(X, full_cov, S)
-        return Fmeans[-1], Fvars[-1]
+        return Fmeans[-1], Fvars[-1]  # S, N, D or S, N, N, D if full_cov=True
 
-    def E_log_p_Y(self):
-        Fmean, Fvar = self._build_predict(self.X, full_cov=False, S=self.num_samples)
-
-        if (isinstance(self.likelihood, Gaussian_likelihood) or
-            isinstance(self.likelihood, HeteroscedasticGaussianlikelihood)):
-            # the Gaussian likelihood broadcasts correctly so no need to tile or use map_fn
-            var_exp = self.likelihood.variational_expectations(Fmean, Fvar, self.Y[None, :, :])
-        else:
-            Y = tf.tile(self.Y[None, :, :], [self.num_samples, 1, 1])
-            f = lambda a: self.likelihood.variational_expectations(a[0], a[1], a[2])
-            var_exp = tf.stack(tf.map_fn(f, (Fmean, Fvar, Y), dtype=float_type))  # S,N
-
+    def E_log_p_Y(self, X, Y):
+        Fs, Fmeans, Fvars = self.propagate(X, full_cov=False, S=self.num_samples)
+        var_exp = self.likelihood.variational_expectations(Fmeans[-1], Fvars[-1], Y)  # S, N, D
         return tf.reduce_mean(var_exp, 0)  # N
 
     @params_as_tensors
     def _build_likelihood(self):
-        L = tf.reduce_sum(self.E_log_p_Y())
-
+        L = tf.reduce_sum(self.E_log_p_Y(self.X, self.Y))
         KL = tf.reduce_sum([layer.KL() for layer in self.layers])
-
         scale = tf.cast(self.num_data, float_type)
         scale /= tf.cast(tf.shape(self.X)[0], float_type)  # minibatch size
-
         return L * scale - KL
 
     @autoflow((float_type, [None, None]), (tf.int32, []))
@@ -141,19 +131,12 @@ class DGP(Model):
     @autoflow((float_type, [None, None]), (tf.int32, []))
     def predict_y(self, Xnew, num_samples):
         Fmean, Fvar = self._build_predict(Xnew, full_cov=False, S=num_samples)
-        S, N, D = tf.shape(Fmean)[0], tf.shape(Fmean)[1], tf.shape(Fmean)[2]
-        flat_arrays = [tf.reshape(a, [S*N, -1]) for a in [Fmean, Fvar]]
-        Y_mean, Y_var = self.likelihood.predict_mean_and_var(*flat_arrays)
-        return [tf.reshape(a, [S, N, self.D_Y]) for a in [Y_mean, Y_var]]
-    
+        return self.likelihood.predict_mean_and_var(Fmean, Fvar)
+
     @autoflow((float_type, [None, None]), (float_type, [None, None]), (tf.int32, []))
     def predict_density(self, Xnew, Ynew, num_samples):
         Fmean, Fvar = self._build_predict(Xnew, full_cov=False, S=num_samples)
-        S, N, D = tf.shape(Fmean)[0], tf.shape(Fmean)[1], tf.shape(Fmean)[2]
-        Ynew = tf.tile(tf.expand_dims(Ynew, 0), [S, 1, 1])
-        flat_arrays = [tf.reshape(a, [S*N, -1]) for a in [Fmean, Fvar, Ynew]]
-        l_flat = self.likelihood.predict_density(*flat_arrays)
-        l = tf.reshape(l_flat, [S, N, -1])
+        l = self.likelihood.predict_density(Fmean, Fvar, Ynew)
         log_num_samples = tf.log(tf.cast(num_samples, float_type))
         return tf.reduce_logsumexp(l - log_num_samples, axis=0)
 
@@ -203,21 +186,10 @@ class DGP_quad(DGP):
 
         return Fs[1:], Fmeans, Fvars
 
-    def E_log_p_Y(self):
-        Fs, Fmeans, Fvars = self.quadrature_propagate(self.X)
-        Fmean, Fvar = Fmeans[-1], Fvars[-1]
-
-        if isinstance(self.likelihood, Gaussian_likelihood):
-            var_exp = self.likelihood.variational_expectations(Fmean, Fvar, self.Y[None, :, :]) # S,N,D_Y
-        else:
-            Y = tf.tile(self.Y[None, :, :], [self.num_samples, 1, 1])
-            f = lambda a: self.likelihood.variational_expectations(a[0], a[1], a[2])
-            var_exp = tf.stack(tf.map_fn(f, (Fmean, Fvar, Y), dtype=float_type))  # S,N,D_Y
-
-        # var_exp = tf.reshape(var_exp, [self.H**self.D_quad, self.num_data])
-
-        log_w = tf.log(tf.cast(self.gh_w, dtype=settings.float_type))
-        return tf.reduce_logsumexp(var_exp + log_w[:, None, None], 0)
+    def E_log_p_Y(self, X, Y):
+        Fs, Fmeans, Fvars = self.quadrature_propagate(X)
+        var_exp = self.likelihood.variational_expectations(Fmeans[-1], Fvars[-1], Y)  # S, N, D
+        return tf.reduce_sum(var_exp * self.gh_w[:, None, None], 0)  # N
 
 
 class HMC_DGP_quad(DGP_quad):
