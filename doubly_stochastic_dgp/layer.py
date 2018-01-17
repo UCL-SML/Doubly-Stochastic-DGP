@@ -75,7 +75,7 @@ class Layer(Parameterized):
         self.mean_function = mean_function
         self.forward_propagate_inputs = forward_propagate_inputs
 
-    def conditional(self, X, full_cov=False):
+    def conditional(self, X, Z=None, full_cov=False):
         """
         Calculate the conditional of a single sample
 
@@ -89,12 +89,15 @@ class Layer(Parameterized):
         :param full_cov: Whether to calculate full covariance or just diagonal
         :return: mean (N x D_out), var (N x D_out) or (N x N x D_out)
         """
-        mean, var = conditional(X, self.feature.Z, self.kern,
+        if Z is None:
+            Z = self.feature.Z
+
+        mean, var = conditional(X, Z, self.kern,
                                 self.q_mu, q_sqrt=self.q_sqrt,
                                 full_cov=full_cov, white=True)
         return mean + self.mean_function(X), var
 
-    def multisample_conditional(self, X, full_cov=False):
+    def multisample_conditional(self, X, Z=None, full_cov=False):
         """
         A multisample conditional, where X is shape (S x N x D_out), indpendent over samples
 
@@ -108,15 +111,22 @@ class Layer(Parameterized):
         :param full_cov: Whether to calculate full covariance or just diagonal
         :return: mean (S x N x D_out), var (S x N x D_out) or (S x N x N x D_out)
         """
-        if full_cov is True:
-            f = lambda a: self.conditional(a, full_cov=full_cov)
-            mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
+
+        if Z is not None:
+            f = lambda a: self.conditional(a[0], Z=a[1], full_cov=full_cov)
+            mean, var = tf.map_fn(f, [X, Z], dtype=(tf.float64, tf.float64))
             return tf.stack(mean), tf.stack(var)
+
         else:
-            S, N, D = tf.shape(X)[0], tf.shape(X)[1], tf.shape(X)[2]
-            X_flat = tf.reshape(X, [S * N, D])
-            mean, var = self.conditional(X_flat)
-            return [tf.reshape(m, [S, N, -1]) for m in [mean, var]]
+            if full_cov is True:
+                f = lambda a: self.conditional(a, full_cov=full_cov)
+                mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
+                return tf.stack(mean), tf.stack(var)
+            else:
+                S, N, D = tf.shape(X)[0], tf.shape(X)[1], tf.shape(X)[2]
+                X_flat = tf.reshape(X, [S * N, D])
+                mean, var = self.conditional(X_flat)
+                return [tf.reshape(m, [S, N, -1]) for m in [mean, var]]
 
     def uncertain_conditional(self, X_mean, X_var, full_cov=False, full_cov_output=False):
         mean, var = uncertain_conditional(X_mean, tf.matrix_diag(X_var),  # need to make diag for now

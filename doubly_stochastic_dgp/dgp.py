@@ -52,7 +52,8 @@ class DGP(Model):
                  minibatch_size=None, 
                  num_samples=1,
                  mean_function=Zero(),
-                 init_layers=init_layers_linear_mean_functions):
+                 init_layers=init_layers_linear_mean_functions,
+                 sample_over_inducing_points=False):
         Model.__init__(self)
 
         # shapes
@@ -74,20 +75,41 @@ class DGP(Model):
             self.X = DataHolder(X)
             self.Y = DataHolder(Y)
 
+        self.sample_over_inducing_points = sample_over_inducing_points
+
     @params_as_tensors
     def propagate(self, X, full_cov=False, S=1):
         sX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1])
         Fs = [sX, ]
         Fmeans, Fvars = [], []
 
+        ZuFs = []
+
         for layer in self.layers:
             if layer.forward_propagate_inputs:
-                X_inputs = tf.concat([sX, Fs[-1]], 2)
+                X_inputs = tf.concat([sX, Fs[-1]], 2)  # S,N,Dx+Dgp
+
+                if self.sample_over_inducing_points:
+                    Z_inputs = layer.feature.Z[:, :self.X_dim]  # M,Dx
+                    sZ_inputs = tf.tile(tf.expand_dims(Z_inputs, 0), [S, 1, 1])  # S,M,Dx
+                    Z_new = tf.concat([sZ_inputs, ZuFs[-1]], 2)  # S,M,Dx+Dgp
+
+                    mean_F, var_F = layer.multisample_conditional(X, Z=Z_new, full_cov=full_cov)
+                    mean_ZuF, var_ZuF = layer.multisample_conditional(Z_new, Z=Z_new, full_cov=full_cov)
+
+                    F = normal_sample(mean_F, var_F, full_cov=full_cov)
+                    ZuF = normal_sample(mean_ZuF, var_ZuF, full_cov=True)
+                    ZuFs.append(ZuF)
+
+                else:
+                    mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
+                    F = normal_sample(mean, var, full_cov=full_cov)
+
             else:
                 X_inputs = Fs[-1]
 
-            mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
-            F = normal_sample(mean, var, full_cov=full_cov)
+                mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
+                F = normal_sample(mean, var, full_cov=full_cov)
 
             Fs.append(F)
             Fmeans.append(mean)
@@ -163,32 +185,80 @@ class DGP_quad(DGP):
 
         self.gh_x.append(tf.zeros((1, 1), dtype=settings.float_type))
 
+    # @params_as_tensors
+    # def quadrature_propagate(self, X, zs, full_cov=False):
+    #     S = tf.shape(zs[0])[0]
+    #     HX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1]) # H**D, N, D_x
+    #     Fs = [HX, ]
+    #     Fmeans, Fvars = [], []
+    #
+    #     for z, layer in zip(zs, self.layers):
+    #         if layer.forward_propagate_inputs:
+    #             X_inputs = tf.concat([HX, Fs[-1]], 2)
+    #         else:
+    #             X_inputs = Fs[-1]
+    #
+    #         mean, var = layer.multisample_conditional(X_inputs, full_cov=False)
+    #
+    #         if full_cov:
+    #             N = tf.shape(X)[0]
+    #             z = tf.tile(z[:, None, :], [1, N, 1])
+    #
+    #         F = reparameterize(mean, var, z[:, None, :])  # H^quad_dims, N, D
+    #
+    #         Fs.append(F)
+    #         Fmeans.append(mean)
+    #         Fvars.append(var)
+    #
+    #     return Fs[1:], Fmeans, Fvars
+
     @params_as_tensors
     def quadrature_propagate(self, X, zs, full_cov=False):
         S = tf.shape(zs[0])[0]
-        HX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1]) # H**D, N, D_x
-        Fs = [HX, ]
+        sX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1])
+        Fs = [sX, ]
         Fmeans, Fvars = [], []
 
-        for z, layer in zip(zs, self.layers):
+        ZuFs = []
+
+        for _z, layer in zip(zs, self.layers):
+            N = tf.shape(X)[0]
+            z = tf.tile(_z[:, None, :], [1, N, 1])
+
             if layer.forward_propagate_inputs:
-                X_inputs = tf.concat([HX, Fs[-1]], 2)
+                X_inputs = tf.concat([sX, Fs[-1]], 2)  # S,N,Dx+Dgp
+
+                if self.sample_over_inducing_points:
+                    Z_inputs = layer.feature.Z[:, :self.X_dim]  # M,Dx
+                    sZ_inputs = tf.tile(tf.expand_dims(Z_inputs, 0), [S, 1, 1])  # S,M,Dx
+                    Z_new = tf.concat([sZ_inputs, ZuFs[-1]], 2)  # S,M,Dx+Dgp
+
+                    mean_F, var_F = layer.multisample_conditional(X, Z=Z_new, full_cov=full_cov)
+                    mean_ZuF, var_ZuF = layer.multisample_conditional(Z_new, Z=Z_new, full_cov=full_cov)
+
+                    # F = normal_sample(mean_F, var_F, full_cov=full_cov)
+                    # ZuF = normal_sample(mean_ZuF, var_ZuF, full_cov=full_cov)
+                    F = reparameterize(mean_F, var_F, z, full_cov=full_cov)
+                    ZuF = reparameterize(mean_ZuF, var_ZuF, z, full_cov=True)
+                    ZuFs.append(ZuF)
+
+                else:
+                    mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
+                    F = reparameterize(mean, var, z, full_cov=full_cov)
+
             else:
                 X_inputs = Fs[-1]
 
-            mean, var = layer.multisample_conditional(X_inputs, full_cov=False)
-
-            if full_cov:
-                N = tf.shape(X)[0]
-                z = tf.tile(z[:, None, :], [1, N, 1])
-
-            F = reparameterize(mean, var, z[:, None, :])  # H^quad_dims, N, D
+                mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
+                # F = normal_sample(mean, var, full_cov=full_cov)
+                F = reparameterize(mean, var, z, full_cov=full_cov)  # H^quad_dims, N, D
 
             Fs.append(F)
             Fmeans.append(mean)
             Fvars.append(var)
 
-        return Fs[1:], Fmeans, Fvars
+        return Fs[1:], Fmeans, Fvars  # don't return Fs[0] as this is just X
+
 
     def E_log_p_Y(self, X, Y):
         Fs, Fmeans, Fvars = self.quadrature_propagate(X, self.gh_x)
@@ -207,6 +277,9 @@ class HMC_DGP_quad(DGP_quad):
 
         if 'minibatch_size' in kw:
             assert (kw['minibatch_size'] is None) or (kw['minibatch_size']==self.num_data)
+
+
+
 
 
 
