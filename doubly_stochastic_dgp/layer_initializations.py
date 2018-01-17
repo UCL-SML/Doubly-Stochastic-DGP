@@ -42,7 +42,7 @@ def init_layers_linear_mean_functions(X, Y, Z, kernels, D_Y):
         mean_function.set_trainable(False)
 
         q_mu = np.zeros((M, dim_out))
-        q_sqrt = np.eye(M)[:, :, None] * np.ones((1, 1, dim_out))
+        q_sqrt = np.eye(M)[None, :, :] * np.ones((dim_out, 1, 1))
 
         layers.append(Layer(kern, q_mu, q_sqrt, Z_running, mean_function))
 
@@ -56,7 +56,6 @@ def init_layers_input_propagation(X, Y, Z, kernels, D_Y):
     D = X.shape[1]
     M = Z.shape[0]
     dims = [k.input_dim for k in kernels] + [D_Y, ]
-
     layers = []
 
     for l, (dim_in, dim_out, kern) in enumerate(zip(dims[:-1], dims[1:], kernels)):
@@ -75,7 +74,7 @@ def init_layers_input_propagation(X, Y, Z, kernels, D_Y):
             gp_output_dim = dim_out - D
 
         q_mu = np.zeros((M, gp_output_dim))
-        q_sqrt = np.eye(M)[:, :, None] * np.ones((1, 1, gp_output_dim))
+        q_sqrt = np.eye(M)[None, :, :] * np.ones((gp_output_dim, 1, 1))
 
         layers.append(Layer(kern, q_mu, q_sqrt, Z_layer, Zero(),
                             forward_propagate_inputs=forward_prop))

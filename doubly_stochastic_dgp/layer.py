@@ -26,7 +26,7 @@ from gpflow.likelihoods import Gaussian
 from gpflow import settings
 from gpflow import params_as_tensors
 from gpflow import densities
-
+from gpflow import transforms
 
 from gpflow.priors import Gaussian as Gaussian_prior
 from gpflow.densities import multivariate_normal
@@ -67,7 +67,9 @@ class Layer(Parameterized):
         :return:
         """
         Parameterized.__init__(self)
-        self.q_mu, self.q_sqrt = Parameter(q_mu), Parameter(q_sqrt)
+        self.q_mu = Parameter(q_mu)
+        self.q_sqrt = Parameter(q_sqrt, transform=transforms.LowerTriangular(q_mu.shape[0],
+                                                                             num_matrices=q_mu.shape[1]))
         self.feature = InducingPoints(Z)
         self.kern = kern
         self.mean_function = mean_function

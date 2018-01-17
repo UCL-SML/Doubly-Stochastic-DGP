@@ -13,23 +13,24 @@
 # limitations under the License.
 
 import tensorflow as tf
+import numpy as np
 
 from gpflow.params import DataHolder, Minibatch
 from gpflow import autoflow, params_as_tensors, ParamList
 from gpflow.models.model import Model
-from gpflow.mean_functions import Zero
 from gpflow.likelihoods import Gaussian as Gaussian_likelihood
 from gpflow import settings
 from gpflow.priors import Gaussian as Gaussian_prior
-
 float_type = settings.float_type
 
-from doubly_stochastic_dgp.utils import normal_sample
+from doubly_stochastic_dgp.utils import normal_sample, reparameterize
 from doubly_stochastic_dgp.layer_initializations import init_layers_linear_mean_functions
 from doubly_stochastic_dgp.layer import Layer
 from doubly_stochastic_dgp.utils import PositiveSoftplus
 from doubly_stochastic_dgp.utils import LikelihoodWrapper
 
+from gpflow.quadrature import mvhermgauss
+from gpflow.mean_functions import Zero
 
 
 class DGP(Model):
@@ -142,8 +143,6 @@ class DGP(Model):
 
 
 
-from gpflow.quadrature import mvhermgauss
-from gpflow.mean_functions import Zero
 
 class DGP_quad(DGP):
     def __init__(self, *args, H=10, **kw):
@@ -165,12 +164,13 @@ class DGP_quad(DGP):
         self.gh_x.append(tf.zeros((1, 1), dtype=settings.float_type))
 
     @params_as_tensors
-    def quadrature_propagate(self, X):
-        HX = tf.tile(tf.expand_dims(X, 0), [self.H**self.D_quad, 1, 1]) # H**D, N, D_x
+    def quadrature_propagate(self, X, zs, full_cov=False):
+        S = tf.shape(zs[0])[0]
+        HX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1]) # H**D, N, D_x
         Fs = [HX, ]
         Fmeans, Fvars = [], []
 
-        for x, layer in zip(self.gh_x, self.layers):
+        for z, layer in zip(zs, self.layers):
             if layer.forward_propagate_inputs:
                 X_inputs = tf.concat([HX, Fs[-1]], 2)
             else:
@@ -178,7 +178,11 @@ class DGP_quad(DGP):
 
             mean, var = layer.multisample_conditional(X_inputs, full_cov=False)
 
-            F = mean + var**0.5 * x[:, None, :]  # H^quad_dims, N, D
+            if full_cov:
+                N = tf.shape(X)[0]
+                z = tf.tile(z[:, None, :], [1, N, 1])
+
+            F = reparameterize(mean, var, z[:, None, :])  # H^quad_dims, N, D
 
             Fs.append(F)
             Fmeans.append(mean)
@@ -187,9 +191,10 @@ class DGP_quad(DGP):
         return Fs[1:], Fmeans, Fvars
 
     def E_log_p_Y(self, X, Y):
-        Fs, Fmeans, Fvars = self.quadrature_propagate(X)
+        Fs, Fmeans, Fvars = self.quadrature_propagate(X, self.gh_x)
         var_exp = self.likelihood.variational_expectations(Fmeans[-1], Fvars[-1], Y)  # S, N, D
         return tf.reduce_sum(var_exp * self.gh_w[:, None, None], 0)  # N
+
 
 
 class HMC_DGP_quad(DGP_quad):
@@ -315,144 +320,144 @@ class HMC_DGP_quad(DGP_quad):
 
 
 
-from gpflow.params import Parameter
-from gpflow import transforms
-from gpflow.likelihoods import Likelihood
-from gpflow import densities
-import numpy as np
-
-
-class HeteroscedasticGaussianlikelihood(Likelihood):
-    def __init__(self, Dy, v_0=0.1, positive_transform=PositiveSoftplus()):
-        Likelihood.__init__(self)
-        self.Dy = Dy
-        self.positive_transform=positive_transform
-        self.v_0 = Parameter(v_0, transform=transforms.positive)
-
-
-    def _make_l_positive(self, l):
-        return self.positive_transform.forward(l + self.positive_transform.backward(self.v_0))
-
-    def _slice_variance(self, F_l):
-        dims = F_l.get_shape().ndims
-        start_F = [0, ] * dims
-        end_F = [-1, ] * (dims - 1) + [self.Dy, ]
-
-        start_l = [0, ] * (dims - 1) + [self.Dy, ]
-        end_l = [-1, ] * (dims - 1) + [-1, ]
-
-        # l = F_l[:, :, self.Dy:]
-        # F = F_l[:, :, :self.Dy]
-
-        F = tf.slice(F_l, start_F, end_F)
-        l = tf.slice(F_l, start_l, end_l)
-
-
-        return F, self._make_l_positive(l)
-
-    def _slice_and_sample(self, F_mu_l, F_var_l, full_cov=False):
-        F_mu, l_mu = self._slice_variance(F_mu_l)
-        F_var, l_var = self._slice_variance(F_var_l)
-        l = normal_sample(l_mu, l_var, full_cov=full_cov)
-        return F_mu, F_var, self._make_l_positive(l)
-
-    @params_as_tensors
-    def logp(self, F_l, Y):
-        F, variance = self._slice_variance(F_l)
-        return densities.gaussian(F, Y, variance)
-
-    @params_as_tensors
-    def conditional_mean(self, F_l):
-        F, variance = self._slice_variance(F_l)
-        return tf.identity(F)
-
-    @params_as_tensors
-    def conditional_variance(self, F_l):
-        F, variance = self._slice_variance(F_l)
-        return tf.fill(tf.shape(F), tf.squeeze(variance))
-
-    @params_as_tensors
-    def predict_mean_and_var(self, Fmu_l, Fvar_l):
-        Fmu, Fvar, variance = self._slice_and_sample(Fmu_l, Fvar_l)
-        return tf.identity(Fmu), Fvar + variance
-
-    @params_as_tensors
-    def predict_density(self, Fmu_l, Fvar_l, Y):
-        Fmu, Fvar, variance = self._slice_and_sample(Fmu_l, Fvar_l)
-        return densities.gaussian(Fmu, Y, Fvar + variance)
-
-    @params_as_tensors
-    def variational_expectations(self, Fmu_l, Fvar_l, Y):
-        Fmu, Fvar, variance = self._slice_and_sample(Fmu_l, Fvar_l)
-        return -0.5 * np.log(2 * np.pi) - 0.5 * tf.log(variance) \
-               - 0.5 * (tf.square(Y - Fmu) + Fvar) / variance
-
-
-class HeteroscedasticDGP(DGP):
-    def __init__(self, X, Y, Z, kernels, likelihood, likelihood_kernel, **kwargs):
-
-        assert isinstance(likelihood, HeteroscedasticGaussianlikelihood)
-        DGP.__init__(self, X, Y, Z, kernels, likelihood, **kwargs)
-
-        M, D_Y = Z.shape[0], Y.shape[1]
-        q_mu = np.zeros((M, D_Y))
-        q_sqrt = np.tile(np.eye(M)[:, :, None], [1, 1, D_Y])
-        self.likelihood_variance_layer = Layer(likelihood_kernel, q_mu, q_sqrt, Z, Zero())
-
-    @params_as_tensors
-    def propagate(self, X, full_cov=False, S=1):
-        Fs, Fmeans, Fvars = DGP.propagate(self, X, full_cov=full_cov, S=S)
-
-        sX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1])
-        l_mean, l_var = self.likelihood_variance_layer.multisample_conditional(sX, full_cov)
-
-        Fmeans[-1] = tf.concat([Fmeans[-1], l_mean], -1)
-
-        Fs[-1] = tf.concat([Fs[-1], normal_sample(l_mean, l_var, full_cov=full_cov)], -1)
-        Fvars[-1] = tf.concat([Fvars[-1], l_var], -1)
-
-        # if full_cov is True:
-        #     l_var_SDNN = tf.transpose(l_var, [0, 2, 3, 1])
-        #     l_var_SDN = tf.matrix_diag_part(l_var_SDNN)
-        #     l_var_SND = tf.transpose(l_var_SDN, [0, 2, 1])
-        #
-        #     Fs[-1] = tf.concat([Fs[-1], normal_sample(l_mean, l_var_SND, full_cov=False)], -1)
-        #
-        #     l_var_diag_SDNN = tf.matrix_diag(l_var_SDN)
-        #     l_var_diag_SNND = tf.transpose(l_var_diag_SDNN, [0, 2, 3, 1])
-        #     Fvars[-1] = tf.concat([Fvars[-1], l_var_diag_SNND], -1)
-        #
-        # else:
-        #     Fs[-1] = tf.concat([Fs[-1], normal_sample(l_mean, l_var, full_cov=False)], -1)
-        #     Fvars[-1] = tf.concat([Fvars[-1], l_var], -1)
-
-
-
-        # if full_cov is False:
-        #     Fvars[-1] = tf.concat([Fvars[-1], l_var], -1)
-        # else:
-        #     l_var_SDN = tf.transpose(l_var, [0, 2, 1])
-        #     l_var_SDNN = tf.matrix_diag(l_var_SDN)
-        #     l_var_SNND = tf.transpose(l_var_SDNN, [0, 2, 3, 1])
-        #     Fvars[-1] = tf.concat([Fvars[-1], l_var_SNND], -1)
-
-        return Fs, Fmeans, Fvars
-
-    @params_as_tensors
-    def _build_likelihood(self):
-        return DGP._build_likelihood(self) - self.likelihood_variance_layer.KL()
-
-    @params_as_tensors
-    @autoflow((float_type, [None, None]), (tf.int32, []))
-    def predict_likelihood_variance(self, Xnew, num_samples):
-        Fs, Fmeans, Fvars = self.propagate(Xnew, S=num_samples)
-        return self.likelihood._slice_variance(Fs[-1])[1]
-
-    @params_as_tensors
-    @autoflow((float_type, [None, None]), (tf.int32, []))
-    def predict_likelihood_variance_full_cov(self, Xnew, num_samples):
-        Fs, Fmeans, Fvars = self.propagate(Xnew, full_cov=True, S=num_samples)
-        return self.likelihood._slice_variance(Fs[-1])[1]
+# from gpflow.params import Parameter
+# from gpflow import transforms
+# from gpflow.likelihoods import Likelihood
+# from gpflow import densities
+# import numpy as np
+#
+#
+# class HeteroscedasticGaussianlikelihood(Likelihood):
+#     def __init__(self, Dy, v_0=0.1, positive_transform=PositiveSoftplus()):
+#         Likelihood.__init__(self)
+#         self.Dy = Dy
+#         self.positive_transform=positive_transform
+#         self.v_0 = Parameter(v_0, transform=transforms.positive)
+#
+#
+#     def _make_l_positive(self, l):
+#         return self.positive_transform.forward(l + self.positive_transform.backward(self.v_0))
+#
+#     def _slice_variance(self, F_l):
+#         dims = F_l.get_shape().ndims
+#         start_F = [0, ] * dims
+#         end_F = [-1, ] * (dims - 1) + [self.Dy, ]
+#
+#         start_l = [0, ] * (dims - 1) + [self.Dy, ]
+#         end_l = [-1, ] * (dims - 1) + [-1, ]
+#
+#         # l = F_l[:, :, self.Dy:]
+#         # F = F_l[:, :, :self.Dy]
+#
+#         F = tf.slice(F_l, start_F, end_F)
+#         l = tf.slice(F_l, start_l, end_l)
+#
+#
+#         return F, self._make_l_positive(l)
+#
+#     def _slice_and_sample(self, F_mu_l, F_var_l, full_cov=False):
+#         F_mu, l_mu = self._slice_variance(F_mu_l)
+#         F_var, l_var = self._slice_variance(F_var_l)
+#         l = normal_sample(l_mu, l_var, full_cov=full_cov)
+#         return F_mu, F_var, self._make_l_positive(l)
+#
+#     @params_as_tensors
+#     def logp(self, F_l, Y):
+#         F, variance = self._slice_variance(F_l)
+#         return densities.gaussian(F, Y, variance)
+#
+#     @params_as_tensors
+#     def conditional_mean(self, F_l):
+#         F, variance = self._slice_variance(F_l)
+#         return tf.identity(F)
+#
+#     @params_as_tensors
+#     def conditional_variance(self, F_l):
+#         F, variance = self._slice_variance(F_l)
+#         return tf.fill(tf.shape(F), tf.squeeze(variance))
+#
+#     @params_as_tensors
+#     def predict_mean_and_var(self, Fmu_l, Fvar_l):
+#         Fmu, Fvar, variance = self._slice_and_sample(Fmu_l, Fvar_l)
+#         return tf.identity(Fmu), Fvar + variance
+#
+#     @params_as_tensors
+#     def predict_density(self, Fmu_l, Fvar_l, Y):
+#         Fmu, Fvar, variance = self._slice_and_sample(Fmu_l, Fvar_l)
+#         return densities.gaussian(Fmu, Y, Fvar + variance)
+#
+#     @params_as_tensors
+#     def variational_expectations(self, Fmu_l, Fvar_l, Y):
+#         Fmu, Fvar, variance = self._slice_and_sample(Fmu_l, Fvar_l)
+#         return -0.5 * np.log(2 * np.pi) - 0.5 * tf.log(variance) \
+#                - 0.5 * (tf.square(Y - Fmu) + Fvar) / variance
+#
+#
+# class HeteroscedasticDGP(DGP):
+#     def __init__(self, X, Y, Z, kernels, likelihood, likelihood_kernel, **kwargs):
+#
+#         assert isinstance(likelihood, HeteroscedasticGaussianlikelihood)
+#         DGP.__init__(self, X, Y, Z, kernels, likelihood, **kwargs)
+#
+#         M, D_Y = Z.shape[0], Y.shape[1]
+#         q_mu = np.zeros((M, D_Y))
+#         q_sqrt = np.tile(np.eye(M)[:, :, None], [1, 1, D_Y])
+#         self.likelihood_variance_layer = Layer(likelihood_kernel, q_mu, q_sqrt, Z, Zero())
+#
+#     @params_as_tensors
+#     def propagate(self, X, full_cov=False, S=1):
+#         Fs, Fmeans, Fvars = DGP.propagate(self, X, full_cov=full_cov, S=S)
+#
+#         sX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1])
+#         l_mean, l_var = self.likelihood_variance_layer.multisample_conditional(sX, full_cov)
+#
+#         Fmeans[-1] = tf.concat([Fmeans[-1], l_mean], -1)
+#
+#         Fs[-1] = tf.concat([Fs[-1], normal_sample(l_mean, l_var, full_cov=full_cov)], -1)
+#         Fvars[-1] = tf.concat([Fvars[-1], l_var], -1)
+#
+#         # if full_cov is True:
+#         #     l_var_SDNN = tf.transpose(l_var, [0, 2, 3, 1])
+#         #     l_var_SDN = tf.matrix_diag_part(l_var_SDNN)
+#         #     l_var_SND = tf.transpose(l_var_SDN, [0, 2, 1])
+#         #
+#         #     Fs[-1] = tf.concat([Fs[-1], normal_sample(l_mean, l_var_SND, full_cov=False)], -1)
+#         #
+#         #     l_var_diag_SDNN = tf.matrix_diag(l_var_SDN)
+#         #     l_var_diag_SNND = tf.transpose(l_var_diag_SDNN, [0, 2, 3, 1])
+#         #     Fvars[-1] = tf.concat([Fvars[-1], l_var_diag_SNND], -1)
+#         #
+#         # else:
+#         #     Fs[-1] = tf.concat([Fs[-1], normal_sample(l_mean, l_var, full_cov=False)], -1)
+#         #     Fvars[-1] = tf.concat([Fvars[-1], l_var], -1)
+#
+#
+#
+#         # if full_cov is False:
+#         #     Fvars[-1] = tf.concat([Fvars[-1], l_var], -1)
+#         # else:
+#         #     l_var_SDN = tf.transpose(l_var, [0, 2, 1])
+#         #     l_var_SDNN = tf.matrix_diag(l_var_SDN)
+#         #     l_var_SNND = tf.transpose(l_var_SDNN, [0, 2, 3, 1])
+#         #     Fvars[-1] = tf.concat([Fvars[-1], l_var_SNND], -1)
+#
+#         return Fs, Fmeans, Fvars
+#
+#     @params_as_tensors
+#     def _build_likelihood(self):
+#         return DGP._build_likelihood(self) - self.likelihood_variance_layer.KL()
+#
+#     @params_as_tensors
+#     @autoflow((float_type, [None, None]), (tf.int32, []))
+#     def predict_likelihood_variance(self, Xnew, num_samples):
+#         Fs, Fmeans, Fvars = self.propagate(Xnew, S=num_samples)
+#         return self.likelihood._slice_variance(Fs[-1])[1]
+#
+#     @params_as_tensors
+#     @autoflow((float_type, [None, None]), (tf.int32, []))
+#     def predict_likelihood_variance_full_cov(self, Xnew, num_samples):
+#         Fs, Fmeans, Fvars = self.propagate(Xnew, full_cov=True, S=num_samples)
+#         return self.likelihood._slice_variance(Fs[-1])[1]
 
 # class EDGP(DGP):
 #     """
