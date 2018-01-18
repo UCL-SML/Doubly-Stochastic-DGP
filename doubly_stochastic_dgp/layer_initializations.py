@@ -56,15 +56,19 @@ def init_layers_input_propagation(X, Y, Z, kernels, D_Y):
     D = X.shape[1]
     M = Z.shape[0]
     dims = [k.input_dim for k in kernels] + [D_Y, ]
+    vars = [k.variance.read_value() for k in kernels]
     layers = []
 
-    for l, (dim_in, dim_out, kern) in enumerate(zip(dims[:-1], dims[1:], kernels)):
+    for l, (dim_in, dim_out, kern, v) in enumerate(zip(dims[:-1], dims[1:], kernels, vars)):
         if l == 0:  # first layer, not input prop so Z is the original Z
             Z_layer = Z.copy()
             forward_prop = False
 
-        else:  # other layers, need to input prop and append zeros to Z
-            Z_layer = np.concatenate([Z.copy(), np.zeros((M, dim_in - D))], 1)
+        else:  # other layers, need to input prop and append zeros or random to Z
+            # Z_l = np.zeros((M, dim_in - D))
+            Z_l = 2 * np.random.randn(M, dim_in - D) * v**0.5
+
+            Z_layer = np.concatenate([Z.copy(), Z_l], 1)
             forward_prop = True
 
         if l == len(dims) - 2:  # final layer, dim_out is Y_dim

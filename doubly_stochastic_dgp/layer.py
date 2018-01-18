@@ -112,21 +112,15 @@ class Layer(Parameterized):
         :return: mean (S x N x D_out), var (S x N x D_out) or (S x N x N x D_out)
         """
 
-        if Z is not None:
-            f = lambda a: self.conditional(a[0], Z=a[1], full_cov=full_cov)
-            mean, var = tf.map_fn(f, [X, Z], dtype=(tf.float64, tf.float64))
+        if full_cov is True:
+            f = lambda a: self.conditional(a, Z=Z, full_cov=full_cov)
+            mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
             return tf.stack(mean), tf.stack(var)
-
         else:
-            if full_cov is True:
-                f = lambda a: self.conditional(a, full_cov=full_cov)
-                mean, var = tf.map_fn(f, X, dtype=(tf.float64, tf.float64))
-                return tf.stack(mean), tf.stack(var)
-            else:
-                S, N, D = tf.shape(X)[0], tf.shape(X)[1], tf.shape(X)[2]
-                X_flat = tf.reshape(X, [S * N, D])
-                mean, var = self.conditional(X_flat)
-                return [tf.reshape(m, [S, N, -1]) for m in [mean, var]]
+            S, N, D = tf.shape(X)[0], tf.shape(X)[1], tf.shape(X)[2]
+            X_flat = tf.reshape(X, [S * N, D])
+            mean, var = self.conditional(X_flat, Z=Z)
+            return [tf.reshape(m, [S, N, -1]) for m in [mean, var]]
 
     def uncertain_conditional(self, X_mean, X_var, full_cov=False, full_cov_output=False):
         mean, var = uncertain_conditional(X_mean, tf.matrix_diag(X_var),  # need to make diag for now
@@ -162,6 +156,21 @@ class Layer(Parameterized):
         """
         return gauss_kl(self.q_mu, self.q_sqrt)
 
+    def single_sample_fV(self, Z=None):
+        if Z is None:
+            Z = self.feature.Z
+        Kzz = self.kern.K(Z)
+        Kzz += settings.jitter* tf.eye(tf.shape(Z)[0], dtype=settings.dtypes.float_type)
+        L = tf.cholesky(Kzz)
+
+        M, D = tf.shape(self.q_mu)[0], tf.shape(self.q_mu)[1]
+
+        mu = self.q_mu
+        if self.q_sqrt is not None:
+            z_DM1 = tf.matmul(self.q_sqrt, tf.random_normal((D, M, 1), dtype=settings.float_type))
+            mu += tf.transpose(z_DM1[:, :, 0])
+
+        return tf.matmul(L, mu) + self.mean_function(Z)
 
 
 # class HMCLayer(Layer):

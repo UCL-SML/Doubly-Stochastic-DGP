@@ -26,7 +26,7 @@ from gpflow import settings
 
 from doubly_stochastic_dgp.utils import normal_sample
 from doubly_stochastic_dgp.utils import PositiveExp, PositiveSoftplus
-from doubly_stochastic_dgp.utils import LikelihoodWrapper
+from doubly_stochastic_dgp.utils import BroadcastingLikelihood
 
 
 
@@ -34,7 +34,7 @@ from doubly_stochastic_dgp.utils import LikelihoodWrapper
 class LikelihoodTester(Model):
     def __init__(self, likelihood):
         Model.__init__(self)
-        self.wrapped_likelihood = LikelihoodWrapper(likelihood)
+        self.wrapped_likelihood = BroadcastingLikelihood(likelihood)
         self.likelihood = likelihood
 
     def _build_likelihood(self):

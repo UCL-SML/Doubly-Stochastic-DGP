@@ -27,7 +27,7 @@ from doubly_stochastic_dgp.utils import normal_sample, reparameterize
 from doubly_stochastic_dgp.layer_initializations import init_layers_linear_mean_functions
 from doubly_stochastic_dgp.layer import Layer
 from doubly_stochastic_dgp.utils import PositiveSoftplus
-from doubly_stochastic_dgp.utils import LikelihoodWrapper
+from doubly_stochastic_dgp.utils import BroadcastingLikelihood
 
 from gpflow.quadrature import mvhermgauss
 from gpflow.mean_functions import Zero
@@ -65,7 +65,7 @@ class DGP(Model):
         self.layers = init_layers(X, Y, Z, kernels, self.D_Y)
         self.layers[-1].mean_function = mean_function
 
-        self.likelihood = LikelihoodWrapper(likelihood)
+        self.likelihood = BroadcastingLikelihood(likelihood)
 
         # data
         if minibatch_size is not None:
@@ -84,21 +84,20 @@ class DGP(Model):
         Fmeans, Fvars = [], []
 
         ZuFs = []
+        X_dim = tf.shape(X)[1]
 
         for layer in self.layers:
             if layer.forward_propagate_inputs:
                 X_inputs = tf.concat([sX, Fs[-1]], 2)  # S,N,Dx+Dgp
 
                 if self.sample_over_inducing_points:
-                    Z_inputs = layer.feature.Z[:, :self.X_dim]  # M,Dx
-                    sZ_inputs = tf.tile(tf.expand_dims(Z_inputs, 0), [S, 1, 1])  # S,M,Dx
-                    Z_new = tf.concat([sZ_inputs, ZuFs[-1]], 2)  # S,M,Dx+Dgp
+                    Z_inputs = layer.feature.Z[:, :X_dim]  # M,Dx
+                    Z_new = tf.concat([Z_inputs, ZuFs[-1]], 1)  # M,Dx+Dgp
 
-                    mean_F, var_F = layer.multisample_conditional(X, Z=Z_new, full_cov=full_cov)
-                    mean_ZuF, var_ZuF = layer.multisample_conditional(Z_new, Z=Z_new, full_cov=full_cov)
+                    mean, var = layer.multisample_conditional(X_inputs, Z=Z_new, full_cov=full_cov)
+                    F = normal_sample(mean, var, full_cov=full_cov)
 
-                    F = normal_sample(mean_F, var_F, full_cov=full_cov)
-                    ZuF = normal_sample(mean_ZuF, var_ZuF, full_cov=True)
+                    ZuF = layer.single_sample_fV(Z=Z_new)
                     ZuFs.append(ZuF)
 
                 else:
@@ -107,6 +106,11 @@ class DGP(Model):
 
             else:
                 X_inputs = Fs[-1]
+
+                if self.sample_over_inducing_points:
+                    ZuF = layer.single_sample_fV()
+                    ZuFs.append(ZuF)
+
 
                 mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
                 F = normal_sample(mean, var, full_cov=full_cov)
@@ -183,7 +187,7 @@ class DGP_quad(DGP):
             self.gh_x.append(gh_x[:, s:e])  # this is broken up into each layer, for ease of use
             s += layer.q_mu.shape[1]
 
-        self.gh_x.append(tf.zeros((1, 1), dtype=settings.float_type))
+        self.gh_x.append(tf.zeros((self.H**self.D_quad, 1), dtype=settings.float_type))
 
     # @params_as_tensors
     # def quadrature_propagate(self, X, zs, full_cov=False):
@@ -220,38 +224,40 @@ class DGP_quad(DGP):
         Fmeans, Fvars = [], []
 
         ZuFs = []
+        X_dim = tf.shape(X)[1]
 
         for _z, layer in zip(zs, self.layers):
             N = tf.shape(X)[0]
-            z = tf.tile(_z[:, None, :], [1, N, 1])
+            zN = tf.tile(_z[:, None, :], [1, N, 1])
 
             if layer.forward_propagate_inputs:
                 X_inputs = tf.concat([sX, Fs[-1]], 2)  # S,N,Dx+Dgp
 
                 if self.sample_over_inducing_points:
-                    Z_inputs = layer.feature.Z[:, :self.X_dim]  # M,Dx
-                    sZ_inputs = tf.tile(tf.expand_dims(Z_inputs, 0), [S, 1, 1])  # S,M,Dx
-                    Z_new = tf.concat([sZ_inputs, ZuFs[-1]], 2)  # S,M,Dx+Dgp
+                    Z_inputs = layer.feature.Z[:, :X_dim]  # M,Dx
+                    Z_new = tf.concat([Z_inputs, ZuFs[-1]], 1)  # M,Dx+Dgp
 
-                    mean_F, var_F = layer.multisample_conditional(X, Z=Z_new, full_cov=full_cov)
-                    mean_ZuF, var_ZuF = layer.multisample_conditional(Z_new, Z=Z_new, full_cov=full_cov)
+                    mean, var = layer.multisample_conditional(X_inputs, Z=Z_new, full_cov=full_cov)
+                    F = reparameterize(mean, var, zN, full_cov=full_cov)
 
-                    # F = normal_sample(mean_F, var_F, full_cov=full_cov)
-                    # ZuF = normal_sample(mean_ZuF, var_ZuF, full_cov=full_cov)
-                    F = reparameterize(mean_F, var_F, z, full_cov=full_cov)
-                    ZuF = reparameterize(mean_ZuF, var_ZuF, z, full_cov=True)
+                    ZuF = layer.single_sample_fV(Z_new)
                     ZuFs.append(ZuF)
 
                 else:
                     mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
-                    F = reparameterize(mean, var, z, full_cov=full_cov)
+                    F = reparameterize(mean, var, zN, full_cov=full_cov)
 
             else:
                 X_inputs = Fs[-1]
 
+                if self.sample_over_inducing_points:
+                    ZuF = layer.single_sample_fV()
+                    ZuFs.append(ZuF)
+
+
                 mean, var = layer.multisample_conditional(X_inputs, full_cov=full_cov)
-                # F = normal_sample(mean, var, full_cov=full_cov)
-                F = reparameterize(mean, var, z, full_cov=full_cov)  # H^quad_dims, N, D
+                F = reparameterize(mean, var, zN, full_cov=full_cov)
+
 
             Fs.append(F)
             Fmeans.append(mean)
