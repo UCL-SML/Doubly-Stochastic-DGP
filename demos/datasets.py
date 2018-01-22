@@ -22,20 +22,19 @@ from zipfile import ZipFile
 
 import csv
 
-DATA_PATH = '/data/'
-
-def csv_file_path(name):
-    return '{}{}.csv'.format(DATA_PATH, name)
-
 
 class Dataset(object):
-    def __init__(self, name, N, D, type):
+    def __init__(self, name, N, D, type, data_path='/data/'):
+        self.data_path = data_path
         self.name, self.N, self.D = name, N, D
         assert type in ['regression', 'classification', 'multiclass']
         self.type = type
 
+    def csv_file_path(self, name):
+        return '{}{}.csv'.format(self.data_path, name)
+
     def read_data(self):
-        data = pandas.read_csv(csv_file_path(self.name),
+        data = pandas.read_csv(self.csv_file_path(self.name),
                                header=None, delimiter=',').values
         return {'X':data[:, :-1], 'Y':data[:, -1, None]}
 
@@ -43,7 +42,7 @@ class Dataset(object):
         NotImplementedError
 
     def get_data(self, seed=0, split=0, prop=0.9):
-        path = csv_file_path(self.name)
+        path = self.csv_file_path(self.name)
         if not os.path.isfile(path):
             self.download_data()
 
@@ -87,6 +86,7 @@ class Dataset(object):
 datasets = []
 uci_base = 'https://archive.ics.uci.edu/ml/machine-learning-databases/'
 
+
 class Boston(Dataset):
     def __init__(self):
         self.name, self.N, self.D = 'boston', 506, 12
@@ -96,10 +96,9 @@ class Boston(Dataset):
         url = '{}{}'.format(uci_base, 'housing/housing.data')
 
         data = pandas.read_fwf(url, header=None).values
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
 
-datasets.append(Boston())
 
 class Concrete(Dataset):
     def __init__(self):
@@ -110,10 +109,9 @@ class Concrete(Dataset):
         url = '{}{}'.format(uci_base, 'concrete/compressive/Concrete_Data.xls')
 
         data = pandas.read_excel(url).values
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
 
-datasets.append(Concrete())
 
 class Energy(Dataset):
     def __init__(self):
@@ -125,10 +123,8 @@ class Energy(Dataset):
 
         data = pandas.read_excel(url).values
 
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
-
-datasets.append(Energy())
 
 
 class Kin8mn(Dataset):
@@ -142,10 +138,9 @@ class Kin8mn(Dataset):
 
         data = pandas.read_csv(url, header=None).values
 
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
 
-datasets.append(Kin8mn())
 
 class Naval(Dataset):
     def __init__(self):
@@ -163,19 +158,8 @@ class Naval(Dataset):
         data = pandas.read_fwf('/tmp/UCI CBM Dataset/data.txt', header=None).values
         data = data[:, :-1]
 
-        ind = list(np.arange(15))
-        # bad dims
-        ind.pop(11)
-        ind.pop(8)
-
-        data = data[:, ind]
-
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
-
-datasets.append(Naval())
-
-
 
 
 class Power(Dataset):
@@ -191,10 +175,9 @@ class Power(Dataset):
 
         data = pandas.read_excel('/tmp/CCPP//Folds5x2_pp.xlsx').values
 
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
 
-datasets.append(Power())
 
 class Protein(Dataset):
     def __init__(self):
@@ -207,10 +190,8 @@ class Protein(Dataset):
 
         data = pandas.read_csv(url).values
 
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
-
-datasets.append(Protein())
 
 
 class WineRed(Dataset):
@@ -224,10 +205,8 @@ class WineRed(Dataset):
 
         data = pandas.read_csv(url, delimiter=';').values
 
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
-
-datasets.append(WineRed())
 
 
 class WineWhite(Dataset):
@@ -241,32 +220,28 @@ class WineWhite(Dataset):
 
         data = pandas.read_csv(url, delimiter=';').values
 
-        with open(csv_file_path(self.name), 'w') as f:
+        with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
-
-datasets.append(WineWhite())
 
 
 class Datasets(object):
-    def __init__(self):
+    def __init__(self, data_path='/data/'):
+        if not os.path.isdir(data_path):
+            os.mkdir(data_path)
+
+        datasets = []
+
+        datasets.append(Boston())
+        datasets.append(Concrete())
+        datasets.append(Energy())
+        datasets.append(Kin8mn())
+        datasets.append(Naval())
+        datasets.append(Power())
+        datasets.append(Protein())
+        datasets.append(WineRed())
+        datasets.append(WineWhite())
+
         self.all_datasets = {}
         for d in datasets:
+            d.data_path = data_path
             self.all_datasets.update({d.name : d})
-
-
-# datasets = Datasets().all_datasets
-# for d in datasets:
-#     print(d)
-#     for split in np.arange(20):
-#         data = datasets[d].get_data(split=split)
-#         X, Y, Xs, Ys = [data[_] for _ in ['X', 'Y', 'Xs', 'Ys']]
-#
-#         try:
-#             from scipy.cluster.vq import kmeans2
-#             Z = kmeans2(X, 10, minit='points')[0]
-#         except:
-#             print(d, split)
-#
-#     if np.any(np.isnan(X)):
-#         print(d)
-
