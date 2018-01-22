@@ -24,11 +24,8 @@ from gpflow.likelihoods import *
 from gpflow.models import Model
 from gpflow import settings
 
-from doubly_stochastic_dgp.utils import normal_sample
-from doubly_stochastic_dgp.utils import PositiveExp, PositiveSoftplus
+from doubly_stochastic_dgp.utils import reparameterize
 from doubly_stochastic_dgp.utils import LikelihoodWrapper
-
-
 
 
 class LikelihoodTester(Model):
@@ -123,7 +120,7 @@ class TestLikelihoodWrapper(unittest.TestCase):
         S, N, D = 5, 4, 3
         self.Fmu = np.random.randn(S, N, D)
         self.Fvar = np.random.randn(S, N, D)**2
-        self.Y = np.ones((N, D))
+        self.N, self.D = N, D
 
     def run_tests(self, likelihood, Fmu, Fvar, Y):
         l = LikelihoodTester(likelihood)
@@ -143,107 +140,70 @@ class TestLikelihoodWrapper(unittest.TestCase):
                         l.variational_expectations2(Fmu, Fvar, Y))
 
     def test_gaussian(self):
-        self.run_tests(Gaussian(), self.Fmu, self.Fvar, self.Y)
+        self.run_tests(Gaussian(), self.Fmu, self.Fvar, np.random.randn(self.N, self.D))
 
     def test_bernoulli(self):
-        self.run_tests(Bernoulli(), self.Fmu, self.Fvar, self.Y)
+        Y = np.random.choice([0., 1.], self.N * self.D).reshape(self.N, self.D)
+        self.run_tests(Bernoulli(), self.Fmu, self.Fvar, Y)
 
-    # def test_multiclass(self):
+    # def test_multiclass(self):  # something odd's going on here with float vs double
     #     K = self.Fmu.shape[2]
     #     Y = np.ones((self.Fmu.shape[1], K))
     #     self.run_tests(MultiClass(K), self.Fmu, self.Fvar, Y)
 
     def test_exponential(self):
-        self.run_tests(Exponential(), self.Fmu, self.Fvar, self.Y)
+        Y = np.random.randn(self.N, self.D)**2
+        self.run_tests(Exponential(), self.Fmu, self.Fvar, Y)
 
     def test_poisson(self):
-        self.run_tests(Poisson(), self.Fmu, self.Fvar, self.Y)
+        Y = np.floor(np.random.randn(self.N, self.D)**2).astype(float)
+        self.run_tests(Poisson(), self.Fmu, self.Fvar, Y)
 
     def test_studentT(self):
-        self.run_tests(StudentT(), self.Fmu, self.Fvar, self.Y)
+        Y = np.random.randn(self.N, self.D)
+        self.run_tests(StudentT(), self.Fmu, self.Fvar, Y)
 
-    def test_studentT(self):
-        self.run_tests(Gamma(), self.Fmu, self.Fvar, self.Y)
+    def test_gamma(self):
+        Y = np.random.randn(self.N, self.D)**2
+        self.run_tests(Gamma(), self.Fmu, self.Fvar, Y)
 
     def test_beta(self):
-        self.run_tests(Beta(), self.Fmu, self.Fvar, self.Y)
+        Y = np.random.randn(self.N, self.D)
+        Y = 1/(1+np.exp(-Y))
+        self.run_tests(Beta(), self.Fmu, self.Fvar, Y)
 
-# class TestSampling(unittest.TestCase):
-#     def test(self):
-#         N, D = 2, 2
-#
-#         m = np.random.randn(N, D)
-#         U = np.random.randn(N, N, D)
-#         S = np.einsum('nNd,mNd->nmd', U, U)
-#         S_diag = np.random.randn(N, D)**2
-#
-#         num_samples = 100000
-#         m_ = np.tile(m[None, :, :], [num_samples, 1, 1])
-#         S_ =  np.tile(S[None, :, :, :], [num_samples, 1, 1, 1])
-#         S_diag_ =  np.tile(S_diag[None, :, :], [num_samples, 1, 1])
-#
-#         with tf.Session() as sess:
-#             samples_diag = sess.run(normal_sample(m_, S_diag_))
-#             samples = sess.run(normal_sample(m_, S_, full_cov=True))
-#
-#         assert_allclose(np.average(samples, 0), m, atol=0.05)
-#
-#         cov = np.array([np.cov(s) for s in np.transpose(samples, [2, 1, 0])])
-#         cov = np.transpose(cov, [1, 2, 0])
-#         assert_allclose(cov, S, atol=0.05)
-#
-#         assert_allclose(np.average(samples_diag, 0), m, atol=0.05)
-#         assert_allclose(np.std(samples_diag, 0)**2, S_diag, atol=0.05)
-#
-#
-# class TestForwardBackward(unittest.TestCase):
-#     def setUp(self):
-#         N, D = 3, 2
-#         self.x = np.random.randn(N, D)
-#         self.y = np.random.randn(N, D)**2
-#         self.pos_exp = PositiveExp()
-#         self.pos_softplus = PositiveSoftplus()
-#
-#     def test_tf_np(self):
-#         with tf.Session() as sess:
-#             for f in self.pos_exp, self.pos_softplus:
-#                 y_tf = sess.run(f.forward(tf.cast(self.x, tf.float64)))
-#                 y_np = f.forward_np(self.x)
-#                 assert_allclose(y_tf, y_np)
-#
-#                 x_tf = sess.run(f.backward(tf.cast(self.y, tf.float64)))
-#                 x_np = f.backward_np(self.y)
-#                 assert_allclose(x_tf, x_np)
-#
-#     def test_postive(self):
-#         with tf.Session() as sess:
-#             for f in self.pos_exp, self.pos_softplus:
-#                 y_tf = sess.run(f.forward(tf.cast(self.x, tf.float64)))
-#                 assert np.all(y_tf > 0.)
-#
-#     def test_inverse(self):
-#         with tf.Session() as sess:
-#             for f in self.pos_exp, self.pos_softplus:
-#                 x_tf = sess.run(f.backward(f.forward(tf.cast(self.x, tf.float64))))
-#                 assert_allclose(x_tf, self.x)
-#                 y_tf = sess.run(f.forward(f.backward(tf.cast(self.y, tf.float64))))
-#                 assert_allclose(y_tf, self.y)
-#
-#     def test_extreme_for_softplus(self):
-#         with tf.Session() as sess:
-#             f = self.pos_softplus
-#             x = np.linspace(-5, 1000, 100)
-#             y = np.linspace(1e-5, 1000, 100)
-#
-#             x_tf = sess.run(f.backward(f.forward(tf.cast(x, tf.float64))))
-#             assert_allclose(x_tf, x)
-#             y_tf = sess.run(f.forward(f.backward(tf.cast(y, tf.float64))))
-#             assert_allclose(y_tf, y)
-#
-#             x_neg = np.linspace(-1000, 0)
-#             y_neg = sess.run(f.forward(tf.cast(x_neg, tf.float64)))
-#             assert(not np.any(np.isnan(y_neg)))
-#             assert np.all(y_neg>0.)
+    def test_ordinal(self):
+        Y = np.random.choice(range(4), self.N*self.D).reshape(self.N, self.D).astype(float)
+        self.run_tests(Ordinal(np.linspace(-2, 2, 4)), self.Fmu, self.Fvar, Y)
+
+
+class TestReparameterize(unittest.TestCase):
+    def testReparameterizeDiag(self):
+        S, N, D = 4, 3, 2
+        mean = np.random.randn(S, N, D)
+        var = np.random.randn(S, N, D)**2
+        z = np.random.randn(S, N, D)
+        f = mean + z * (var + 1e-6)**0.5
+        with tf.Session() as sess:
+            assert_allclose(f, sess.run(reparameterize(tf.identity(mean), var, z)))
+
+    def testReparameterizeFullCov(self):
+        S, N, D = 4, 3, 2
+
+        mean = np.random.randn(S, N, D)
+        U = np.random.randn(S, N, N, D)
+        var = np.einsum('SnNd,SmNd->Snmd', U, U) + np.eye(N)[None, :, :, None] * 1e-6
+
+        var_flat = np.reshape(np.transpose(var, [0, 3, 1, 2]), [S*D, N, N])
+        L_flat = np.linalg.cholesky(var_flat + np.eye(N)[None, :, :] * 1e-6)
+        L = np.transpose(np.reshape(L_flat, [S, D, N, N]), [0, 2, 3, 1])
+
+        z = np.random.randn(S, N, D)
+        f = mean + np.einsum('SnNd,SNd->Snd', L, z)
+
+        with tf.Session() as sess:
+            assert_allclose(f, sess.run(reparameterize(tf.identity(mean), var, z,
+                                                       full_cov=True)))
 
 
 if __name__ == '__main__':

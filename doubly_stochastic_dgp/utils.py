@@ -12,19 +12,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+
+import numpy as np
 import tensorflow as tf
+
 from gpflow import settings
 from gpflow.likelihoods import Likelihood
-from gpflow import params_as_tensors
-import numpy as np
+from gpflow import params_as_tensors, Parameterized
+from gpflow.kullback_leiblers import gauss_kl as _gauss_kl
 
-from gpflow.likelihoods import *
 
-def normal_sample(mean, var, full_cov=False):
-    z = tf.random_normal(tf.shape(mean), dtype=settings.float_type)
-    return reparameterize(mean, var, z, full_cov=full_cov)
+from gpflow.likelihoods import Gaussian
+
 
 def reparameterize(mean, var, z, full_cov=False):
+    """
+    Implements the 'reparameterization trick' for the Gaussian, either full rank or diagonal
+
+    The input z is a sample from N(0, 1), the output is a sample from N(mean, var)
+
+    If full_cov=True then var must be of shape S,N,N,D and the full covariance is used. Otherwise
+    var must be S,N,D and the operation is elementwise
+
+    :param mean: mean of shape S,N,D
+    :param var: covariance of shape S,N,D or S,N,N,D
+    :param full_cov: bool to indicate whether var is of shape S,N,N,D or S,N,D
+    :return sample of shape S,N,D
+    """
     if full_cov is False:
         return mean + z * (var + settings.jitter) ** 0.5
 
@@ -41,22 +56,23 @@ def reparameterize(mean, var, z, full_cov=False):
 
 class LikelihoodWrapper(Parameterized):
     """
-    A wrapper for the likelihood to broadcast over the samples dimension. Some likelihoods
-    don't need this, but for others (e.g. bernoulli) need reshaping and tiling.
+    A wrapper for the likelihood to broadcast over the samples dimension. The Gaussian doesn't
+    need this, but other we can apply reshaping and tiling.
+
+    With this wrapper all likelihood functions behave correctly with inputs of shape S,N,D
     """
     def __init__(self, likelihood):
         Parameterized.__init__(self)
         self.likelihood = likelihood
 
-        to_broadcast = [Bernoulli, MultiClass]
-        if np.any([isinstance(likelihood, L) for L in to_broadcast]):
-            self.needs_broadcasting = True
+        if isinstance(likelihood, Gaussian):
+            self.needs_broadcasting = False
         else:
             self.needs_broadcasting = True
 
     def _broadcast(self, f, vars_SND, vars_ND):
         if self.needs_broadcasting is False:
-            return f(vars_SND, vars_ND)
+            return f(vars_SND, [tf.expand_dims(v, 0) for v in vars_ND])
 
         else:
             S, N, D = [tf.shape(vars_SND[0])[i] for i in range(3)]
@@ -105,51 +121,3 @@ class LikelihoodWrapper(Parameterized):
                                                                        vars_SND[1],
                                                                        vars_ND[0])
         return self._broadcast(f,[Fmu, Fvar], [Y])
-
-
-
-class PositiveTransform(object):
-    eps = 1e-6
-    def forward(self, x):
-        NotImplementedError
-
-    def backward(self, y):
-        NotImplementedError
-
-    def forward_np(self, x):
-        NotImplementedError
-
-    def backward_np(self, y):
-        NotImplementedError
-
-
-class PositiveSoftplus(PositiveTransform):
-    def forward(self, x):
-        result = tf.log(1. + tf.exp(x)) + self.eps
-        return tf.where(x > 35., x + self.eps, result)
-
-    def backward(self, y):
-        result = tf.log(tf.exp(y - self.eps) - 1.)
-        return tf.where(y > 35., y - self.eps, result)
-
-    def forward_np(self, x):
-        result = np.log(1. + np.exp(x)) + self.eps
-        return np.where(x > 35., x + self.eps, result)
-
-    def backward_np(self, y):
-        result = np.log(np.exp(y - self.eps) - 1.)
-        return np.where(y > 35., y - self.eps, result)
-
-
-class PositiveExp(PositiveTransform):
-    def forward(self, x):
-        return tf.exp(x) + self.eps
-
-    def backward(self, y):
-        return tf.log(y - self.eps)
-
-    def forward_np(self, x):
-        return np.exp(x) + self.eps
-
-    def backward_np(self, y):
-        return np.log(y - self.eps)
