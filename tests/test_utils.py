@@ -56,7 +56,7 @@ class LikelihoodTester(Model):
     @params_as_tensors
     @autoflow((settings.float_type, [None, None, None]))
     def conditional_mean2(self, F):
-        f = lambda a: self.likelihood.conditional_mean(a)
+        f = lambda a: tf.cast(self.likelihood.conditional_mean(a), dtype=settings.float_type)
         return tf.stack(tf.map_fn(f, F, dtype=settings.float_type))
 
     @params_as_tensors
@@ -67,7 +67,7 @@ class LikelihoodTester(Model):
     @params_as_tensors
     @autoflow((settings.float_type, [None, None, None]))
     def conditional_variance2(self, F):
-        f = lambda a: self.likelihood.conditional_variance(a)
+        f = lambda a: tf.cast(self.likelihood.conditional_variance(a), dtype=settings.float_type)
         return tf.stack(tf.map_fn(f, F, dtype=settings.float_type))
 
     @params_as_tensors
@@ -146,10 +146,10 @@ class TestLikelihoodWrapper(unittest.TestCase):
         Y = np.random.choice([0., 1.], self.N * self.D).reshape(self.N, self.D)
         self.run_tests(Bernoulli(), self.Fmu, self.Fvar, Y)
 
-    # def test_multiclass(self):  # something odd's going on here with float vs double
-    #     K = self.Fmu.shape[2]
-    #     Y = np.ones((self.Fmu.shape[1], K))
-    #     self.run_tests(MultiClass(K), self.Fmu, self.Fvar, Y)
+    def test_multiclass(self):
+        K = self.Fmu.shape[2]
+        Y = np.random.choice(np.arange(K).astype(float), self.Fmu.shape[1]).reshape(-1, 1)
+        self.run_tests(MultiClass(K), self.Fmu, self.Fvar, Y)
 
     def test_exponential(self):
         Y = np.random.randn(self.N, self.D)**2

@@ -12,17 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings
-
-import numpy as np
 import tensorflow as tf
 
 from gpflow import settings
-from gpflow.likelihoods import Likelihood
 from gpflow import params_as_tensors, Parameterized
-from gpflow.kullback_leiblers import gauss_kl as _gauss_kl
-
-
 from gpflow.likelihoods import Gaussian
 
 
@@ -30,15 +23,16 @@ def reparameterize(mean, var, z, full_cov=False):
     """
     Implements the 'reparameterization trick' for the Gaussian, either full rank or diagonal
 
-    The input z is a sample from N(0, 1), the output is a sample from N(mean, var)
+    If the z is a sample from N(0, 1), the output is a sample from N(mean, var)
 
     If full_cov=True then var must be of shape S,N,N,D and the full covariance is used. Otherwise
     var must be S,N,D and the operation is elementwise
 
     :param mean: mean of shape S,N,D
     :param var: covariance of shape S,N,D or S,N,N,D
+    :param z: samples form unit Gaussian of shape S,N,D
     :param full_cov: bool to indicate whether var is of shape S,N,N,D or S,N,D
-    :return sample of shape S,N,D
+    :return sample from N(mean, var) of shape S,N,D
     """
     if full_cov is False:
         return mean + z * (var + settings.jitter) ** 0.5
@@ -57,9 +51,10 @@ def reparameterize(mean, var, z, full_cov=False):
 class BroadcastingLikelihood(Parameterized):
     """
     A wrapper for the likelihood to broadcast over the samples dimension. The Gaussian doesn't
-    need this, but other we can apply reshaping and tiling.
+    need this, but for the others we can apply reshaping and tiling.
 
-    With this wrapper all likelihood functions behave correctly with inputs of shape S,N,D
+    With this wrapper all likelihood functions behave correctly with inputs of shape S,N,D,
+    but with Y still of shape N,D
     """
     def __init__(self, likelihood):
         Parameterized.__init__(self)
@@ -79,13 +74,13 @@ class BroadcastingLikelihood(Parameterized):
             vars_tiled = [tf.tile(x[None, :, :], [S, 1, 1]) for x in vars_ND]
 
             flattened_SND = [tf.reshape(x, [S*N, D]) for x in vars_SND]
-            flattened_tiled = [tf.reshape(x, [S*N, D]) for x in vars_tiled]
+            flattened_tiled = [tf.reshape(x, [S*N, -1]) for x in vars_tiled]
 
             flattened_result = f(flattened_SND, flattened_tiled)
             if isinstance(flattened_result, tuple):
-                return [tf.reshape(x, [S, N, D]) for x in flattened_result]
+                return [tf.reshape(x, [S, N, -1]) for x in flattened_result]
             else:
-                return tf.reshape(flattened_result, [S, N, D])
+                return tf.reshape(flattened_result, [S, N, -1])
 
     @params_as_tensors
     def variational_expectations(self, Fmu, Fvar, Y):

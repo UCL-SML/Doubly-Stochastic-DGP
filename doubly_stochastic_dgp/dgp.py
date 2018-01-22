@@ -161,10 +161,12 @@ class DGP(DGP_Base):
                 mf = Linear(W)
                 mf.set_trainable(False)
 
+            layers.append(SVGP_Layer(kern_in, Z_running, dim_out, mf))
+
+            if dim_in != dim_out:
                 Z_running = Z_running.dot(W)
                 X_running = X_running.dot(W)
 
-            layers.append(SVGP_Layer(kern_in, Z_running, dim_out, mf))
 
         # final layer
         layers.append(SVGP_Layer(kernels[-1], Z_running, num_outputs, mean_function))

@@ -6,7 +6,7 @@ from numpy.testing import assert_allclose
 from gpflow import settings, session_manager
 from gpflow.models.svgp import SVGP
 from gpflow.kernels import Matern52
-from gpflow.likelihoods import Gaussian, Bernoulli
+from gpflow.likelihoods import Gaussian, Bernoulli, MultiClass
 
 from doubly_stochastic_dgp.dgp import DGP
 
@@ -40,10 +40,19 @@ class TestVsSingleLayer(unittest.TestCase):
         for L in [1, 2]:
             self.compare_to_single_layer(Y, Ys, lik, L)
 
-    def compare_to_single_layer(self, Y, Ys, lik, L):
+    def test_multiclass(self):
+        K = 3
+        lik = MultiClass(K)
+        N, Ns, D_Y = self.X.shape[0], self.Xs.shape[0], self.D_Y
+        Y = np.random.choice([0., 1., 2.], N * 1).reshape(N, 1)
+        Ys = np.random.choice([0., 1., 2.], Ns * 1).reshape(Ns, 1)
+        for L in [1, 2]:
+            self.compare_to_single_layer(Y, Ys, lik, L, num_outputs=K)
+
+    def compare_to_single_layer(self, Y, Ys, lik, L, num_outputs=None):
         kern = Matern52(self.X.shape[1], lengthscales=0.1)
 
-        m_svgp = SVGP(self.X, Y, kern, lik, Z=self.X)
+        m_svgp = SVGP(self.X, Y, kern, lik, Z=self.X, num_latent=num_outputs)
         m_svgp.q_mu = self.q_mu
         m_svgp.q_sqrt = self.q_sqrt
 
@@ -58,7 +67,7 @@ class TestVsSingleLayer(unittest.TestCase):
             kerns.append(Matern52(self.X.shape[1], lengthscales=0.1, variance=2e-6))
         kerns.append(Matern52(self.X.shape[1], lengthscales=0.1))
 
-        m_dgp = DGP(self.X, Y, self.X, kerns, lik)
+        m_dgp = DGP(self.X, Y, self.X, kerns, lik, num_samples=2, num_outputs=num_outputs)
         m_dgp.layers[-1].q_mu = self.q_mu
         m_dgp.layers[-1].q_sqrt = self.q_sqrt
 
