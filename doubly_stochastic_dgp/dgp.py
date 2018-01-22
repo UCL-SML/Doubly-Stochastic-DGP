@@ -24,7 +24,7 @@ from gpflow import settings
 float_type = settings.float_type
 
 from doubly_stochastic_dgp.layers import SVGP_Layer
-from doubly_stochastic_dgp.utils import LikelihoodWrapper
+from doubly_stochastic_dgp.utils import BroadcastingLikelihood
 
 
 class DGP_Base(Model):
@@ -48,7 +48,7 @@ class DGP_Base(Model):
             self.X = DataHolder(X)
             self.Y = DataHolder(Y)
 
-        self.likelihood = LikelihoodWrapper(likelihood)
+        self.likelihood = BroadcastingLikelihood(likelihood)
 
         self.layers = ParamList(layers)
 
@@ -127,7 +127,6 @@ class DGP(DGP_Base):
     The key reference is
 
     ::
-
       @inproceedings{salimbeni2017doubly,
         title={Doubly Stochastic Variational Inference for Deep Gaussian Processes},
         author={Salimbeni, Hugh and Deisenroth, Marc},

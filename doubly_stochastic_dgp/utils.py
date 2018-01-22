@@ -48,13 +48,13 @@ def reparameterize(mean, var, z, full_cov=False):
         mean = tf.transpose(mean, (0, 2, 1))  # SND -> SDN
         var = tf.transpose(var, (0, 3, 1, 2))  # SNND -> SDNN
         I = settings.jitter * tf.eye(N, dtype=settings.float_type)[None, None, :, :] # 11NN
-        chol = tf.cholesky(var + I)
-        z_SDN1 = tf.transpose(z, [0, 2, 1])[:, :, :, None]
+        chol = tf.cholesky(var + I)  # SDNN
+        z_SDN1 = tf.transpose(z, [0, 2, 1])[:, :, :, None]  # SND->SDN1
         f = mean + tf.matmul(chol, z_SDN1)[:, :, :, 0]  # SDN(1)
         return tf.transpose(f, (0, 2, 1)) # SND
 
 
-class LikelihoodWrapper(Parameterized):
+class BroadcastingLikelihood(Parameterized):
     """
     A wrapper for the likelihood to broadcast over the samples dimension. The Gaussian doesn't
     need this, but other we can apply reshaping and tiling.

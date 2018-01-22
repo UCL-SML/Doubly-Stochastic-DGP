@@ -25,13 +25,13 @@ from gpflow.models import Model
 from gpflow import settings
 
 from doubly_stochastic_dgp.utils import reparameterize
-from doubly_stochastic_dgp.utils import LikelihoodWrapper
+from doubly_stochastic_dgp.utils import BroadcastingLikelihood
 
 
 class LikelihoodTester(Model):
     def __init__(self, likelihood):
         Model.__init__(self)
-        self.wrapped_likelihood = LikelihoodWrapper(likelihood)
+        self.wrapped_likelihood = BroadcastingLikelihood(likelihood)
         self.likelihood = likelihood
 
     def _build_likelihood(self):
