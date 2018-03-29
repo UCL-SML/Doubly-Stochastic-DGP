@@ -36,11 +36,11 @@ class DGP_Base(Model):
     """
     def __init__(self, X, Y, likelihood, layers,
                  minibatch_size=None,
-                 num_samples=1):
+                 num_samples=1,num_data=None):
         Model.__init__(self)
         self.num_samples = num_samples
 
-        self.num_data = X.shape[0]
+        self.num_data = num_data or X.shape[0]
         if minibatch_size:
             self.X = Minibatch(X, minibatch_size, seed=0)
             self.Y = Minibatch(Y, minibatch_size, seed=0)
