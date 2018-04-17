@@ -154,9 +154,14 @@ class DGP(DGP_Base):
             if dim_in == dim_out:
                 mf = Identity()
 
-            else:  # stepping down, use the pca projection
-                _, _, V = np.linalg.svd(X_running, full_matrices=False)
-                W = V[:dim_out, :].T
+            else:
+                if dim_in > dim_out:  # stepping down, use the pca projection
+                    _, _, V = np.linalg.svd(X_running, full_matrices=False)
+                    W = V[:dim_out, :].T
+
+                else:  # pad with zeros
+                    zeros = np.zeros((dim_in, dim_out - dim_in))
+                    W = np.concatenate([np.eye(dim_in), zeros], 1)
 
                 mf = Linear(W)
                 mf.set_trainable(False)
