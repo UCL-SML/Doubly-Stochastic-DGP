@@ -122,6 +122,7 @@ class Energy(Dataset):
         url = '{}{}'.format(uci_base, '00242/ENB2012_data.xlsx')
 
         data = pandas.read_excel(url).values
+        data = data[:, :-1]
 
         with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
@@ -189,6 +190,8 @@ class Protein(Dataset):
         url = '{}{}'.format(uci_base, '00265/CASP.csv')
 
         data = pandas.read_csv(url).values
+
+        data = np.concatenate([data[:, 1:], data[:, 0, None]], 1)
 
         with open(self.csv_file_path(self.name), 'w') as f:
             csv.writer(f).writerows(data)
