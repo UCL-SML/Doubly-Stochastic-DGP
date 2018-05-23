@@ -20,11 +20,16 @@ from gpflow import autoflow, params_as_tensors, ParamList
 from gpflow.models.model import Model
 from gpflow.mean_functions import Identity, Linear
 from gpflow.mean_functions import Zero
+from gpflow.quadrature import mvhermgauss
+from gpflow.likelihoods import Gaussian
 from gpflow import settings
 float_type = settings.float_type
 
-from doubly_stochastic_dgp.layers import SVGP_Layer
+from doubly_stochastic_dgp.utils import reparameterize
+
 from doubly_stochastic_dgp.utils import BroadcastingLikelihood
+from doubly_stochastic_dgp.layer_initializations import init_layers_linear
+from doubly_stochastic_dgp.layers import GPR_Layer, SGPMC_Layer, GPMC_Layer, SVGP_Layer
 
 
 class DGP_Base(Model):
@@ -36,8 +41,8 @@ class DGP_Base(Model):
     """
     def __init__(self, X, Y, likelihood, layers,
                  minibatch_size=None,
-                 num_samples=1):
-        Model.__init__(self)
+                 num_samples=1, **kwargs):
+        Model.__init__(self, **kwargs)
         self.num_samples = num_samples
 
         self.num_data = X.shape[0]
@@ -61,7 +66,7 @@ class DGP_Base(Model):
         F = sX
         zs = zs or [None, ] * len(self.layers)
         for layer, z in zip(self.layers, zs):
-            F, Fmean, Fvar = layer.sample_from_conditional(F, z=z, full_cov=full_cov)
+            F, Fmean, Fvar = layer.sample_from_conditional_with_input_prop(F, z=z, full_cov=full_cov)
 
             Fs.append(F)
             Fmeans.append(Fmean)
@@ -120,6 +125,48 @@ class DGP_Base(Model):
         return tf.reduce_logsumexp(l - log_num_samples, axis=0)
 
 
+class DGP_Quad(DGP_Base):
+    """
+    A DGP with quadrature instead of MC sampling. This scales exponentially in the sum of the inner layer dims
+    
+    The key ref is:
+    [in progress]
+    
+    """
+    def __init__(self, *args, H=20, **kwargs):
+        DGP_Base.__init__(self, *args, **kwargs)
+        self.H = H
+
+        # set up the quadrature points
+        self.H = H
+        self.D_quad = sum([layer.q_mu.shape[1] for layer in self.layers[:-1]])
+        gh_x, gh_w = mvhermgauss(H, self.D_quad)
+        gh_x *= 2. ** 0.5  # H**quad_dims, quad_dims
+        self.gh_w = gh_w * np.pi ** (-0.5 * self.D_quad)  # H**quad_dims
+
+        # split z into each layer, to work with the loop over layers
+        # the shape is S, 1, D as this will broadcast correctly with S,N,D (never used with full cov)
+        s, e = 0, 0
+        self.gh_x = []
+        for layer in self.layers[:-1]:
+            e += layer.q_mu.shape[1]
+            self.gh_x.append(gh_x[:, None, s:e])
+            s += layer.q_mu.shape[1]
+
+        # finish with zeros (we don't need to do quadrature over the final layer and this will never get used
+        self.gh_x.append(tf.zeros((1, 1, 1), dtype=settings.float_type))
+
+    def E_log_p_Y(self, X, Y):
+        """
+        Calculate the expectation of the data log likelihood under the variational distribution
+         with quadrature 
+        """
+        _, Fmeans, Fvars = self.propagate(X, zs=self.gh_x, full_cov=False, S=self.H**self.D_quad)
+        var_exp = self.likelihood.variational_expectations(Fmeans[-1], Fvars[-1], Y)  # S, N, D
+        return tf.reduce_sum(var_exp * self.gh_w[:, None, None], 0)  # N, D
+        # return tf.reduce_logsumexp(var_exp + np.log(self.gh_w)[:, None, None], 0)  # N, D
+
+
 class DGP(DGP_Base):
     """
     This is the Doubly-Stochastic Deep GP, with linear/identity mean functions at each layer.
@@ -135,40 +182,16 @@ class DGP(DGP_Base):
       }
 
     """
-    def __init__(self, X, Y, Z, kernels, likelihood, 
+    def __init__(self, X, Y, Z, kernels, likelihood,
                  num_outputs=None,
-                 mean_function=Zero(),  # the final layer mean function
+                 mean_function=Zero(),  # the final layer mean function,
+                 white=False,
                  **kwargs):
-        Model.__init__(self)
-        num_outputs = num_outputs or Y.shape[1]
-
-        # init the layers
-        layers = []
-
-        # inner layers
-        X_running, Z_running = X.copy(), Z.copy()
-        for kern_in, kern_out in zip(kernels[:-1], kernels[1:]):
-            dim_in = kern_in.input_dim
-            dim_out = kern_out.input_dim
-
-            if dim_in == dim_out:
-                mf = Identity()
-
-            else:  # stepping down, use the pca projection
-                _, _, V = np.linalg.svd(X_running, full_matrices=False)
-                W = V[:dim_out, :].T
-
-                mf = Linear(W)
-                mf.set_trainable(False)
-
-            layers.append(SVGP_Layer(kern_in, Z_running, dim_out, mf))
-
-            if dim_in != dim_out:
-                Z_running = Z_running.dot(W)
-                X_running = X_running.dot(W)
-
-
-        # final layer
-        layers.append(SVGP_Layer(kernels[-1], Z_running, num_outputs, mean_function))
+        layers = init_layers_linear(X, Y, Z, kernels,
+                                    num_outputs=num_outputs,
+                                    mean_function=mean_function,
+                                    white=white)
 
         DGP_Base.__init__(self, X, Y, likelihood, layers, **kwargs)
+
+
