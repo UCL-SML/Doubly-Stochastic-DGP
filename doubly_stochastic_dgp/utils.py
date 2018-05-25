@@ -34,6 +34,9 @@ def reparameterize(mean, var, z, full_cov=False):
     :param full_cov: bool to indicate whether var is of shape S,N,N,D or S,N,D
     :return sample from N(mean, var) of shape S,N,D
     """
+    if var is None:
+        return mean
+
     if full_cov is False:
         return mean + z * (var + settings.jitter) ** 0.5
 
