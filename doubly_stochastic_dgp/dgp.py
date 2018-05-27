@@ -134,9 +134,8 @@ class DGP_Quad(DGP_Base):
     [in progress]
     
     """
-    def __init__(self, *args, H=20, **kwargs):
+    def __init__(self, *args, H=100, **kwargs):
         DGP_Base.__init__(self, *args, **kwargs)
-        self.H = H
 
         # set up the quadrature points
         self.H = H
@@ -165,7 +164,6 @@ class DGP_Quad(DGP_Base):
         _, Fmeans, Fvars = self.propagate(X, zs=self.gh_x, full_cov=False, S=self.H**self.D_quad)
         var_exp = self.likelihood.variational_expectations(Fmeans[-1], Fvars[-1], Y)  # S, N, D
         return tf.reduce_sum(var_exp * self.gh_w[:, None, None], 0)  # N, D
-        # return tf.reduce_logsumexp(var_exp + np.log(self.gh_w)[:, None, None], 0)  # N, D
 
 
 class DGP(DGP_Base):

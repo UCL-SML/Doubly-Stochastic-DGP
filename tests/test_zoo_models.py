@@ -40,43 +40,44 @@ with _settings.temp_settings(custom_config),\
 
             self.D_Y = D_Y
 
-        # def test_vs_single_layer(self):
-        #     lik = Gaussian()
-        #     lik_var = 0.01
-        #     lik.variance = lik_var
-        #     N, Ns, D_Y, D_X = self.X.shape[0], self.Xs.shape[0], self.D_Y, self.X.shape[1]
-        #     Y = np.random.randn(N, D_Y)
-        #     Ys = np.random.randn(Ns, D_Y)
-        #
-        #     kern = Matern52(self.X.shape[1], lengthscales=0.5)
-        #     # mf = Linear(A=np.random.randn(D_X, D_Y), b=np.random.randn(D_Y))
-        #     mf = Zero()
-        #     m_gpr = GPR(self.X, Y, kern, mean_function=mf)
-        #     m_gpr.likelihood.variance = lik_var
-        #     mean_gpr, var_gpr = m_gpr.predict_y(self.Xs)
-        #     test_lik_gpr = m_gpr.predict_density(self.Xs, Ys)
-        #     pred_m_gpr, pred_v_gpr = m_gpr.predict_f(self.Xs)
-        #     pred_mfull_gpr, pred_vfull_gpr = m_gpr.predict_f_full_cov(self.Xs)
-        #
-        #     kerns = []
-        #     kerns.append(Matern52(self.X.shape[1], lengthscales=0.5, variance=1e-1))
-        #     kerns.append(kern)
-        #
-        #     mean_functions = [Identity(), mf]
-        #     m_dgp = DGP_Heinonen(self.X, Y, kerns, lik, mean_functions, D_X)
-        #
-        #
-        #     mean_dgp, var_dgp = m_dgp.predict_y(self.Xs, 1)
-        #     test_lik_dgp = m_dgp.predict_density(self.Xs, Ys, 1)
-        #     pred_m_dgp, pred_v_dgp = m_dgp.predict_f(self.Xs, 1)
-        #     pred_mfull_dgp, pred_vfull_dgp = m_dgp.predict_f_full_cov(self.Xs, 1)
-        #
-        #     tol = 1e-4
-        #     assert_allclose(mean_dgp[0], mean_gpr, atol=tol, rtol=tol)
-        #     assert_allclose(test_lik_dgp, test_lik_gpr, atol=tol, rtol=tol)
-        #     assert_allclose(pred_m_dgp[0], pred_m_gpr, atol=tol, rtol=tol)
-        #     assert_allclose(pred_mfull_dgp[0], pred_mfull_gpr, atol=tol, rtol=tol)
-        #     assert_allclose(pred_vfull_dgp[0], pred_vfull_gpr, atol=tol, rtol=tol)
+        def test_vs_single_layer(self):
+            lik = Gaussian()
+            lik_var = 0.01
+            lik.variance = lik_var
+            N, Ns, D_Y, D_X = self.X.shape[0], self.Xs.shape[0], self.D_Y, self.X.shape[1]
+            Y = np.random.randn(N, D_Y)
+            Ys = np.random.randn(Ns, D_Y)
+
+            kern = Matern52(self.X.shape[1], lengthscales=0.5)
+            # mf = Linear(A=np.random.randn(D_X, D_Y), b=np.random.randn(D_Y))
+            mf = Zero()
+            m_gpr = GPR(self.X, Y, kern, mean_function=mf)
+            m_gpr.likelihood.variance = lik_var
+            mean_gpr, var_gpr = m_gpr.predict_y(self.Xs)
+            test_lik_gpr = m_gpr.predict_density(self.Xs, Ys)
+            pred_m_gpr, pred_v_gpr = m_gpr.predict_f(self.Xs)
+            pred_mfull_gpr, pred_vfull_gpr = m_gpr.predict_f_full_cov(self.Xs)
+
+            kerns = []
+            kerns.append(Matern52(self.X.shape[1], lengthscales=0.5, variance=1e-1))
+            kerns.append(kern)
+
+            layer0 = GPMC_Layer(kerns[0], self.X.copy(), D_X, Identity())
+            layer1 = GPR_Layer(kerns[1], mf, D_Y)
+            m_dgp = DGP_Heinonen(self.X, Y, lik, [layer0, layer1])
+
+
+            mean_dgp, var_dgp = m_dgp.predict_y(self.Xs, 1)
+            test_lik_dgp = m_dgp.predict_density(self.Xs, Ys, 1)
+            pred_m_dgp, pred_v_dgp = m_dgp.predict_f(self.Xs, 1)
+            pred_mfull_dgp, pred_vfull_dgp = m_dgp.predict_f_full_cov(self.Xs, 1)
+
+            tol = 1e-4
+            assert_allclose(mean_dgp[0], mean_gpr, atol=tol, rtol=tol)
+            assert_allclose(test_lik_dgp, test_lik_gpr, atol=tol, rtol=tol)
+            assert_allclose(pred_m_dgp[0], pred_m_gpr, atol=tol, rtol=tol)
+            assert_allclose(pred_mfull_dgp[0], pred_mfull_gpr, atol=tol, rtol=tol)
+            assert_allclose(pred_vfull_dgp[0], pred_vfull_gpr, atol=tol, rtol=tol)
 
         def test_vs_DGP2(self):
             lik = Gaussian()

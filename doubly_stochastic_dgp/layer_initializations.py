@@ -13,7 +13,6 @@ float_type = settings.float_type
 
 from doubly_stochastic_dgp.layers import SVGP_Layer
 
-
 def init_layers_linear(X, Y, Z, kernels,
                        num_outputs=None,
                        mean_function=Zero(),
@@ -60,34 +59,12 @@ def init_layers_input_prop(X, Y, Z, kernels,
 
     layers = []
 
-    # class LayerInputProp(Layer):
-    #     def __init__(self,  input_prop_dim, *args, **kw):
-    #         Layer.__init__(self, *args, **kw)
-    #         self.input_prop_dim = input_prop_dim
-    #
-    #     def sample_from_conditional(self, X, **kwargs):
-    #         samples, mean, var = Layer.sample_from_conditional(self, X, **kwargs)
-    #         shape = [tf.shape(X)[0], tf.shape(X)[1], self.input_prop_dim]
-    #         X_prop = tf.reshape(X[:, :, :self.input_prop_dim], shape)
-    #
-    #         samples = tf.concat([X_prop, samples], 2)
-    #         mean = tf.concat([X_prop, mean], 2)
-    #
-    #         if kwargs['full_cov']:
-    #             shape = (tf.shape(X)[0], tf.shape(X)[1], tf.shape(X)[1], tf.shape(var)[3])
-    #             zeros = tf.ones(shape, dtype=settings.float_type) * 1e-6
-    #             var = tf.concat([zeros, var], 3)
-    #         else:
-    #             var = tf.concat([tf.ones_like(X_prop) * 1e-6, var], 2)
-    #         return samples, mean, var
-
     for kern_in, kern_out in zip(kernels[:-1], kernels[1:]):
         dim_in = kern_in.input_dim
         dim_out = kern_out.input_dim - D
         std_in = kern_in.variance.read_value()**0.5
         pad = np.random.randn(M, dim_in - D) * 2. * std_in
         Z_padded = np.concatenate([Z, pad], 1)
-        # layers.append(LayerInputProp(D, kern_in, Z_padded, dim_out, Zero(), white=white))
         layers.append(Layer(kern_in, Z_padded, dim_out, Zero(), white=white, input_prop_dim=D))
 
     dim_in = kernels[-1].input_dim
