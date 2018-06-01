@@ -45,14 +45,16 @@ class DGP_Collapsed(DGP_Base):
 
     @params_as_tensors
     def propagate(self, X, full_cov=False, S=1, zs=None):
-        _, ms, vs = self.inner_layers_propagate(self.X, full_cov=full_cov, zs=zs)
-        self.layers[-1].set_data(ms[-1][0], vs[-1][0], self.Y, self.likelihood.likelihood.variance)
+        Fs, ms, vs = self.inner_layers_propagate(self.X, full_cov=full_cov, zs=zs)
+        # self.layers[-1].set_data(ms[-1][0], vs[-1][0], self.Y, self.likelihood.likelihood.variance)
+        self.layers[-1].set_data(Fs[-1][0], None, self.Y, self.likelihood.likelihood.variance)
         return DGP_Base.propagate(self, X, full_cov=full_cov, S=S, zs=zs)
 
     @params_as_tensors
     def _build_likelihood(self):
-        _, ms, vs = self.inner_layers_propagate(self.X, full_cov=False)
-        self.layers[-1].set_data(ms[-1][0], vs[-1][0], self.Y, self.likelihood.likelihood.variance)
+        Fs, ms, vs = self.inner_layers_propagate(self.X, full_cov=False)
+        # self.layers[-1].set_data(ms[-1][0], vs[-1][0], self.Y, self.likelihood.likelihood.variance)
+        self.layers[-1].set_data(Fs[-1][0], None, self.Y, self.likelihood.likelihood.variance)
         KL = tf.cast(tf.reduce_sum([layer.KL() for layer in self.layers[:-1]]), dtype=settings.float_type)
         return self.layers[-1].build_likelihood() - KL
 
@@ -88,6 +90,8 @@ class DGP_Heinonen(DGP_Collapsed):
         return [f], [f], [tf.zeros_like(f)]
 
 
+
+
 # TODO
 # class DGP_Damianou(Parameterized):
 #     """
@@ -102,3 +106,58 @@ class DGP_Heinonen(DGP_Collapsed):
 #
 #     """
 #
+
+class DGP_Joint_Collapsed(DGP_Base):
+    @params_as_tensors
+    def propagate(self, X, full_cov=False, S=1, zs=None):
+        sX = tf.tile(tf.expand_dims(X, 0), [S, 1, 1])
+        Ns = tf.shape(X)[0]
+
+        sDataX = tf.tile(tf.expand_dims(self.X, 0), [S, 1, 1])
+
+        joint_Fs, joint_Fmeans, joint_Fvars = [], [], []
+
+        F = tf.concat([sX, sDataX], 1)  # S, Ns + N, D
+
+        zs = zs or [None, ] * len(self.layers)
+        for layer, z in zip(self.layers[:-1], zs[:-1]):
+            F, Fmean, Fvar = layer.sample_from_conditional(F, z=z, full_cov=full_cov)
+
+            joint_Fs.append(F)
+            joint_Fmeans.append(Fmean)
+            joint_Fvars.append(Fvar)
+
+
+        Fs = [F[:, :Ns, :] for F in joint_Fs]
+        Fmeans = [F[:, :Ns, :] for F in joint_Fmeans]
+        if full_cov:
+            Fvars = [F[:, :Ns, :Ns, :] for F in joint_Fvars]
+        else:
+            Fvars = [F[:, :Ns, :] for F in joint_Fvars]
+
+#+ 0*joint_Fs[-1][0, Ns:, :]
+        # XX = tf.concat([self.X, tf.zeros((20, 1), dtype=settings.float_type)], 1)
+        # self.layers[-1].set_data(joint_Fs[-1][0, Ns:, :], None, self.Y, self.likelihood.likelihood.variance)
+
+        # Fs[-1] = tf.reshape(Fs[-1], [S, Ns, 2])
+        # XXs = tf.concat([sX, 0*Fs[-1][:, :, 1:]], 2)
+
+        F, Fmean, Fvar = self.layers[-1].ssample_from_conditional(Fs[-1],
+                                                                 joint_Fs[-1][:, Ns:, :],
+                                                                 self.Y,
+                                                                 self.likelihood.likelihood.variance,
+                                                                 z=zs[-1], full_cov=full_cov)
+        # F, Fmean, Fvar = self.layers[-1].sample_from_conditional(XXs, z=zs[-1], full_cov=full_cov)
+
+        Fs.append(F)
+        Fmeans.append(Fmean)
+        Fvars.append(Fvar)
+
+        return Fs, Fmeans, Fvars
+
+    @params_as_tensors
+    def _build_likelihood(self):
+        Fs, ms, vs = self.propagate(self.X, S=self.num_samples, full_cov=False)
+        KL = tf.cast(tf.reduce_sum([layer.KL() for layer in self.layers[:-1]]), dtype=settings.float_type)
+        L = self.layers[-1].sbuild_likelihood(Fs[-2], self.Y, self.likelihood.likelihood.variance)
+        return L - KL

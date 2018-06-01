@@ -341,6 +341,84 @@ class GPR_Layer(Collapsed_Layer):
         m = self.mean_function(self._X_mean)
         return tf.reduce_sum(multivariate_normal(self._Y, m, L))
 
+    def sbuild_likelihood(self, sX, Y, lik_variance):
+        def c(X):
+            K = self.kern.K(X) + tf.eye(tf.shape(X)[0], dtype=settings.float_type) * lik_variance
+            L = tf.cholesky(K)
+            m = self.mean_function(X)
+            return tf.reduce_sum(multivariate_normal(Y, m, L))
+
+        l = tf.map_fn(c, sX, dtype=tf.float64)
+
+        return tf.reduce_mean(l)
+
+    def ssample_from_conditional(self, sXnew, sX, Y, lik_variance, full_cov=False, z=None):
+        def c(args):
+            Xnew, X = args
+            Kx = self.kern.K(X, Xnew)
+            K = self.kern.K(X) + tf.eye(tf.shape(X)[0],
+                                                   dtype=settings.float_type) * lik_variance
+            L = tf.cholesky(K)
+            A = tf.matrix_triangular_solve(L, Kx, lower=True)
+            V = tf.matrix_triangular_solve(L, Y - self.mean_function(X))
+            fmean = tf.matmul(A, V, transpose_a=True) + self.mean_function(Xnew)
+            if full_cov:
+                fvar = self.kern.K(Xnew) - tf.matmul(A, A, transpose_a=True)
+                shape = tf.stack([1, 1, tf.shape(Y)[1]])
+                fvar = tf.tile(tf.expand_dims(fvar, 2), shape)
+            else:
+                fvar = self.kern.Kdiag(Xnew) - tf.reduce_sum(tf.square(A), 0)
+                fvar = tf.tile(tf.reshape(fvar, (-1, 1)), [1, tf.shape(Y)[1]])
+            return [fmean, fvar]
+
+        mean, var = tf.map_fn(c, [sXnew, sX], dtype=[tf.float64, tf.float64])
+
+        # set shapes
+        S = tf.shape(sXnew)[0]
+        N = tf.shape(sXnew)[1]
+        D = self.num_outputs
+
+        mean = tf.reshape(mean, (S, N, D))
+        if full_cov:
+            var = tf.reshape(var, (S, N, N, D))
+        else:
+            var = tf.reshape(var, (S, N, D))
+
+        if z is None:
+            z = tf.random_normal(tf.shape(mean), dtype=settings.float_type)
+        samples = reparameterize(mean, var, z, full_cov=full_cov)
+
+        if self.input_prop_dim:
+            shape = [tf.shape(sXnew)[0], tf.shape(sXnew)[1], self.input_prop_dim]
+            X_prop = tf.reshape(sXnew[:, :, :self.input_prop_dim], shape)
+
+            samples = tf.concat([X_prop, samples], 2)
+            mean = tf.concat([X_prop, mean], 2)
+
+            if full_cov:
+                shape = (tf.shape(sXnew)[0], tf.shape(sXnew)[1], tf.shape(sXnew)[1], tf.shape(var)[3])
+                zeros = tf.zeros(shape, dtype=settings.float_type)
+                var = tf.concat([zeros, var], 3)
+            else:
+                var = tf.concat([tf.zeros_like(X_prop), var], 2)
+
+        return samples, mean, var
+
+
+
+
+
+
+    def set_data(self, X_mean, X_var, Y, lik_variance):
+        # if X_var is not None:
+        #     z = tf.random_normal(tf.shape(X_mean), dtype=settings.float_type)
+        #     if X_var.get_shape().ndims == 3:
+        #         X_mean = reparameterize(X_mean[None], X_var[None], z[None], full_cov=True)[0]
+        #     else:
+        #         X_mean = reparameterize(X_mean[None], X_var[None], z[None], full_cov=False)[0]
+        self._X_mean = X_mean
+        self._Y = Y
+        self._lik_variance = lik_variance
 
 class SGPR_Layer(Collapsed_Layer):
     def __init__(self, kern, Z, num_outputs, mean_function, **kwargs):
