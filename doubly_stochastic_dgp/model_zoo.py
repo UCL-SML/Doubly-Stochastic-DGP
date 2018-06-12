@@ -19,7 +19,7 @@ from gpflow.likelihoods import Gaussian
 from gpflow import settings
 
 from doubly_stochastic_dgp.dgp import DGP_Base
-from doubly_stochastic_dgp.layers import GPR_Layer, GPMC_Layer
+from doubly_stochastic_dgp.layers import GPR_Layer, GPMC_Layer, SGPR_Layer
 
 
 class DGP_Collapsed(DGP_Base):
@@ -79,7 +79,7 @@ class DGP_Heinonen(DGP_Collapsed):
         assert len(layers) == 2
         assert isinstance(likelihood, Gaussian)
         assert isinstance(layers[0], GPMC_Layer)
-        assert isinstance(layers[1], GPR_Layer)
+        assert isinstance(layers[1], GPR_Layer) or isinstance(layers[1], SGPR_Layer)
         if 'minibatch_size' in kwargs:
             assert kwargs['minibatch_size'] is None
         DGP_Collapsed.__init__(self, X, Y, likelihood, layers, **kwargs)
@@ -87,7 +87,7 @@ class DGP_Heinonen(DGP_Collapsed):
     @params_as_tensors
     def inner_layers_propagate(self, X, full_cov=False, S=1, zs=None):
         f = self.layers[0].build_latents()[None, :, :]
-        return [f], [f], [tf.zeros_like(f)]
+        return [f], [f], [None]
 
 
 
@@ -134,13 +134,6 @@ class DGP_Joint_Collapsed(DGP_Base):
             Fvars = [F[:, :Ns, :Ns, :] for F in joint_Fvars]
         else:
             Fvars = [F[:, :Ns, :] for F in joint_Fvars]
-
-#+ 0*joint_Fs[-1][0, Ns:, :]
-        # XX = tf.concat([self.X, tf.zeros((20, 1), dtype=settings.float_type)], 1)
-        # self.layers[-1].set_data(joint_Fs[-1][0, Ns:, :], None, self.Y, self.likelihood.likelihood.variance)
-
-        # Fs[-1] = tf.reshape(Fs[-1], [S, Ns, 2])
-        # XXs = tf.concat([sX, 0*Fs[-1][:, :, 1:]], 2)
 
         F, Fmean, Fvar = self.layers[-1].ssample_from_conditional(Fs[-1],
                                                                  joint_Fs[-1][:, Ns:, :],

@@ -420,10 +420,11 @@ class GPR_Layer(Collapsed_Layer):
         self._Y = Y
         self._lik_variance = lik_variance
 
+
 class SGPR_Layer(Collapsed_Layer):
     def __init__(self, kern, Z, num_outputs, mean_function, **kwargs):
         """
-        A sparse variational GP layer with a Gaussian likelihood, where the 
+        A sparse variational GP layer with a Gaussian likelihood, where the
         GP is integrated out
 
         :kern: The kernel for the layer (input_dim = D_in)
@@ -551,11 +552,13 @@ def gplvm_build_predict(self, Xnew, X_mean, X_var, Y, variance, full_cov=False):
                   - tf.matmul(tmp1, tmp1, transpose_a=True)
             shape = tf.stack([1, 1, tf.shape(Y)[1]])
             var = tf.tile(tf.expand_dims(var, 2), shape)
+
         else:
             var = self.kern.Kdiag(Xnew) + tf.reduce_sum(tf.square(tmp2), 0) \
                   - tf.reduce_sum(tf.square(tmp1), 0)
             shape = tf.stack([1, tf.shape(Y)[1]])
             var = tf.tile(tf.expand_dims(var, 1), shape)
+
         return mean + self.mean_function(Xnew), var
 
     else:
