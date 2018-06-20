@@ -189,7 +189,9 @@ class DGP_Damianou(DGP_Base):
     
     For prediction it is not immediately clear how to treat q_X*, the variational distribution of the inputs. We
     simply use the approach of adding the relevant amount of noise and, i.e. we set q_X* to the 
-    marginals of the forward propagated outputs and sample from p(g|f) 
+    marginals of the forward propagated outputs and sample from p(g|f)
+
+    NB this doesn't work with input propagation
 
     """
     def __init__(self, X, Y, likelihood, layers,
@@ -205,11 +207,16 @@ class DGP_Damianou(DGP_Base):
 
         mean_inits = run_through_mean_functions(X.copy(), layers)
 
-        for layer, mean_init in zip(layers[1:], mean_inits):
-            D = layer.kern.input_dim
-            layer.q_X_mu = Parameter(mean_init)
+        for layer, mean_init, prev_layer in zip(layers[1:], mean_inits, layers[:-1]):
+            if prev_layer.input_prop_dim:
+                D = layer.kern.input_dim - prev_layer.input_prop_dim
+            else:
+                D = layer.kern.input_dim
+            print(D)
+            layer.q_X_mu = Parameter(mean_init[:, -D:])
             layer.q_X_sqrt = Parameter(1e-5 * np.ones((N, D)), transform=transforms.positive)
-
+            print(layer.q_X_mu.shape)
+            print(layer.q_X_sqrt.shape)
 
         # the between layer Gaussian noise, for all but the final layer
         for layer in layers[:-1]:
@@ -269,7 +276,9 @@ class DGP_Damianou(DGP_Base):
 
 class DGP_Damianou_Sampled(DGP_Damianou):
     """
-    As DGP_Damianou but without the expensive kernel expectations, using sampling instead. 
+    As DGP_Damianou but without the expensive kernel expectations, using sampling instead.
+
+    This supports input propagation
     """
     @params_as_tensors
     def _build_likelihood(self):
@@ -284,6 +293,10 @@ class DGP_Damianou_Sampled(DGP_Damianou):
                 vsqrt_in = layer_in.q_X_sqrt
                 zz = tf.random_normal(tf.shape(m_in), dtype=settings.float_type)
                 sampled_input = m_in + vsqrt_in * zz
+
+                if self.layers[l-1].input_prop_dim:
+                    sampled_input = tf.concat([self.X, sampled_input], 1)
+
                 m_out, v_out = layer_in.conditional_ND(sampled_input, full_cov=False)
 
             if l == len(self.layers) - 1:  # final layer likelihood (i.e. data)
