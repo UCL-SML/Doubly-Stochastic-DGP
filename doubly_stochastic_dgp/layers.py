@@ -27,7 +27,7 @@ from gpflow.expectations import expectation
 from gpflow.probability_distributions import DiagonalGaussian
 from gpflow import params_as_tensors
 from gpflow.logdensities import multivariate_normal
-
+from gpflow.conditionals import uncertain_conditional
 
 
 from doubly_stochastic_dgp.utils import reparameterize
@@ -76,7 +76,8 @@ class Layer(Parameterized):
     def sample_from_conditional(self, X, z=None, full_cov=False):
         """
         Calculates self.conditional and also draws a sample, adding input propagation if necessary
-
+        uncertain_conditional
+        
         If z=None then the tensorflow random_normal function is used to generate the
         N(0, 1) samples, otherwise z are used for the whitened sample points
 
@@ -173,6 +174,13 @@ class SVGP_Layer(Layer):
             self.Ku_tiled = tf.tile(self.Ku[None, :, :], [self.num_outputs, 1, 1])
             self.Lu_tiled = tf.tile(self.Lu[None, :, :], [self.num_outputs, 1, 1])
             self.needs_build_cholesky = False
+
+    def uncertain_conditional_ND(self, Xmean, Xvar, full_cov=False):
+        return uncertain_conditional(Xmean, Xvar, self.feature, self.kern, self.q_mu, self.q_sqrt,
+                                     mean_function=self.mean_function,
+                                     full_cov_output=False, full_cov=full_cov,
+                                     white=self.white)
+
 
 
     def conditional_ND(self, X, full_cov=False):
@@ -444,6 +452,43 @@ class SGPR_Layer(Collapsed_Layer):
 
     def build_likelihood(self):
         return gplvm_build_likelihood(self, self._X_mean, self._X_var, self._Y, self._lik_variance)
+
+    def sample_from_uncertaint_conditional(self, sXnew, X_mean, X_var, Y_mean, Y_var, lik_variance, full_cov=False, z=None):
+        c = lambda Xnew: gplvm_build_predict(self, Xnew, X_mean, X_var, Y, lik_variance, full_cov=full_cov)
+        mean, var = tf.map_fn(c, sXnew, dtype=[tf.float64, tf.float64])
+
+        # set shapes
+        S = tf.shape(sXnew)[0]
+        N = tf.shape(sXnew)[1]
+        D = self.num_outputs
+
+        mean = tf.reshape(mean, (S, N, D))
+        if full_cov:
+            var = tf.reshape(var, (S, N, N, D))
+        else:
+            var = tf.reshape(var, (S, N, D))
+
+        if z is None:
+            z = tf.random_normal(tf.shape(mean), dtype=settings.float_type)
+        samples = reparameterize(mean, var, z, full_cov=full_cov)
+
+        if self.input_prop_dim:
+            shape = [tf.shape(sXnew)[0], tf.shape(sXnew)[1], self.input_prop_dim]
+            X_prop = tf.reshape(sXnew[:, :, :self.input_prop_dim], shape)
+
+            samples = tf.concat([X_prop, samples], 2)
+            mean = tf.concat([X_prop, mean], 2)
+
+            if full_cov:
+                shape = (tf.shape(sXnew)[0], tf.shape(sXnew)[1], tf.shape(sXnew)[1], tf.shape(var)[3])
+                zeros = tf.zeros(shape, dtype=settings.float_type)
+                var = tf.concat([zeros, var], 3)
+            else:
+                var = tf.concat([tf.zeros_like(X_prop), var], 2)
+
+        return samples, mean, var
+
+
 
 
 ################## From gpflow (with KL removed)
