@@ -271,7 +271,11 @@ class DGP_Damianou(DGP_Base):
                 L += tf.reduce_sum(E_loglik(m_out, v_out, self.Y))
 
         KL = tf.reduce_sum([layer.KL() for layer in self.layers])
-        return L - KL
+
+        # entropy term for q(X)
+        ent = tf.reduce_sum([0.5*(np.log(2*np.pi) + 1) + tf.log(layer.q_X_sqrt) for layer in self.layers[1:]])
+
+        return L - KL + ent
 
 
 class DGP_Damianou_Sampled(DGP_Damianou):
@@ -311,4 +315,7 @@ class DGP_Damianou_Sampled(DGP_Damianou):
                 L += tf.reduce_sum(E_loglik(m_out, v_out, m_next, v_next))
 
         KL = tf.reduce_sum([layer.KL() for layer in self.layers])
-        return L - KL  # minibatch not possible unless tf.gather used for q_mu
+
+        ent = tf.reduce_sum([0.5*(np.log(2*np.pi) + 1) + tf.log(layer.q_X_sqrt) for layer in self.layers[1:]])
+
+        return L - KL + ent # minibatch not possible unless tf.gather used for q_mu
