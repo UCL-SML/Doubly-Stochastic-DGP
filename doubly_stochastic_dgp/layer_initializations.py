@@ -26,13 +26,17 @@ def init_layers_linear(X, Y, Z, kernels,
     for kern_in, kern_out in zip(kernels[:-1], kernels[1:]):
         dim_in = kern_in.input_dim
         dim_out = kern_out.input_dim
-
+        print(dim_in, dim_out)
         if dim_in == dim_out:
             mf = Identity()
 
-        else:  # stepping down, use the pca projection
-            _, _, V = np.linalg.svd(X_running, full_matrices=False)
-            W = V[:dim_out, :].T
+        else:
+            if dim_in > dim_out:  # stepping down, use the pca projection
+                _, _, V = np.linalg.svd(X_running, full_matrices=False)
+                W = V[:dim_out, :].T
+
+            else: # stepping up, use identity + padding
+                W = np.concatenate([np.eye(dim_in), np.zeros((dim_in, dim_out - dim_in))], 1)
 
             mf = Linear(W)
             mf.set_trainable(False)

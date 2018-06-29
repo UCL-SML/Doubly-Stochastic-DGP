@@ -173,6 +173,15 @@ with _settings.temp_settings(custom_config),\
             print('quad val {}'.format(Ls_quad[0]))
             assert np.abs(Ls_quad[0] - m) < std_err * 3  # 99.73% CI
 
+    class TestStepUp(unittest.TestCase):
+        def test(self):
+            kern1 = RBF(1)
+            kern2 = RBF(2)
+            lik = Gaussian()
+            X = np.zeros((1, 1))
+            model = DGP(X, X, X, [kern1, kern2], lik)
+            model.compute_log_likelihood()
+
 
     if __name__ == '__main__':
         unittest.main()
