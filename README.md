@@ -4,6 +4,7 @@ Deep Gaussian Processes with Doubly Stochastic Variational Inference
 Requirements: gpflow1.1.1
 
 This code accompanies the paper
+
 @inproceedings{salimbeni2017doubly,
   title={Doubly stochastic variational inference for deep gaussian processes},
   author={Salimbeni, Hugh and Deisenroth, Marc},
